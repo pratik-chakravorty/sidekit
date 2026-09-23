@@ -1,20 +1,142 @@
+use std::time::Duration;
+
 use gpui_kit::component::input::{Input, InputEvent, InputState, EditorState};
 use gpui_kit::{
     App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, Styled, Subscription, Window, div, prelude::FluentBuilder, px,
+    SharedString, Styled, Subscription, Task, Window, div, prelude::FluentBuilder, px,
 };
 
 use super::*;
 use crate::logic::{self, Indent, plural};
 use crate::ui::{self, Tone};
 
+/// The editor shapes and paints each visible line in full on every frame, so a
+/// multi-megabyte line (minified JSON) drags the whole window down. Lines longer
+/// than this are kept out of the editors.
+const LONG_LINE: usize = 64 * 1024;
+/// Inputs larger than this are processed off the UI thread once typing pauses.
+const LARGE_INPUT: usize = 256 * 1024;
+const DEBOUNCE: Duration = Duration::from_millis(150);
+
 /// Output state shared by the two JSON tools.
 #[derive(Default)]
 struct Out {
+    /// The full result; Copy takes this even when the editor shows a shortened view.
     text: SharedString,
     err: Option<String>,
     status: String,
     tone: Option<Tone>,
+}
+
+/// A finished computation, ready to show.
+struct Done {
+    out: Out,
+    /// The output with over-long lines cut short, when it has any.
+    shown: Option<String>,
+    /// A re-laid copy of an input whose lines are too long to edit comfortably.
+    input: Option<String>,
+}
+
+fn has_long_line(s: &str) -> bool {
+    s.split('\n').any(|l| l.len() > LONG_LINE)
+}
+
+fn clip_long_lines(s: &str) -> String {
+    s.split('\n')
+        .map(|l| {
+            if l.len() <= LONG_LINE {
+                return l.to_string();
+            }
+            let end = (0..=LONG_LINE).rev().find(|&i| l.is_char_boundary(i)).unwrap_or(0);
+            format!("{}…", &l[..end])
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn finish(src: &str, compute: impl FnOnce(&str) -> Out) -> Done {
+    if src.trim().is_empty() {
+        let out = Out { status: "Waiting for input".into(), ..Default::default() };
+        return Done { out, shown: None, input: None };
+    }
+    let mut out = compute(src);
+    let shown = has_long_line(&out.text).then(|| clip_long_lines(&out.text));
+    if shown.is_some() {
+        out.status.push_str(" · Long lines shortened, copy for the full output");
+    }
+    // Minified input: pretty-print it so the input pane stays responsive.
+    let input = if has_long_line(src) {
+        serde_json::from_str::<serde_json::Value>(src)
+            .ok()
+            .map(|v| logic::to_json(&v, &Indent::Spaces(2)))
+            .filter(|s| !has_long_line(s))
+    } else {
+        None
+    };
+    Done { out, shown, input }
+}
+
+/// The input and output editors of a JSON tool and the computation between them.
+struct Io {
+    input: Entity<EditorState>,
+    output: Entity<EditorState>,
+    out: Out,
+    finder: Finder,
+    task: Option<Task<()>>,
+}
+
+impl Io {
+    fn new<V: 'static>(
+        sample: &str,
+        (in_lang, out_lang): (&'static str, &'static str),
+        window: &mut Window,
+        cx: &mut Context<V>,
+    ) -> (Self, Subscription) {
+        let input = code_editor(sample, "Paste or type JSON", in_lang, window, cx);
+        let output = code_editor("", "", out_lang, window, cx);
+        let (finder, find_sub) = Finder::new(&output, window, cx);
+        (Self { input, output, out: Out::default(), finder, task: None }, find_sub)
+    }
+
+    /// Recompute the output from the input: right away for small inputs, in the
+    /// background after a pause in typing for large ones.
+    fn run<V: 'static>(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<V>,
+        io: fn(&mut V) -> &mut Io,
+        compute: impl FnOnce(&str) -> Out + Send + 'static,
+    ) {
+        let text = self.input.read(cx).text().clone();
+        if text.len() <= LARGE_INPUT {
+            self.task = None;
+            let done = finish(&text.to_string(), compute);
+            self.apply(done, window, cx);
+            return;
+        }
+        self.out.status = "Working…".into();
+        self.out.tone = None;
+        cx.notify();
+        // Replacing the task drops (cancels) the one still waiting.
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(DEBOUNCE).await;
+            let done = cx
+                .background_executor()
+                .spawn(async move { finish(&text.to_string(), compute) })
+                .await;
+            let _ = this.update_in(cx, |v, window, cx| io(v).apply(done, window, cx));
+        }));
+    }
+
+    fn apply<V: 'static>(&mut self, done: Done, window: &mut Window, cx: &mut Context<V>) {
+        if let Some(input) = done.input {
+            set_text(&self.input, &input, window, cx);
+        }
+        self.out = done.out;
+        set_text(&self.output, done.shown.as_deref().unwrap_or(&self.out.text), window, cx);
+        self.finder.refresh(cx);
+        cx.notify();
+    }
 }
 
 /// Find-in-output: a small search box that drives the read-only result editor's
@@ -131,14 +253,12 @@ fn finder_el<V: 'static>(id: &'static str, finder: &Finder, window: &mut Window,
 fn panes<V: 'static>(
     id: &'static str,
     (in_title, out_title): (&'static str, &'static str),
-    input: &Entity<EditorState>,
-    output: &Entity<EditorState>,
-    finder: &Finder,
-    out: &Out,
+    io: &Io,
     window: &mut Window,
     cx: &mut Context<V>,
     recompute: impl Fn(&mut V, &mut Window, &mut Context<V>) + Clone + 'static,
 ) -> gpui_kit::AnyElement {
+    let Io { input, output, finder, out, .. } = io;
     let pal = Pal::get(cx);
     let [paste, clear] = paste_clear(id, input, &pal, cx, recompute);
     let search = finder_el(id, finder, window, cx);
@@ -183,68 +303,55 @@ fn panes<V: 'static>(
 const INDENTS: &[&str] = &["2 spaces", "4 spaces", "1 tab", "Minified"];
 
 pub struct JsonFmtView {
-    input: Entity<EditorState>,
-    output: Entity<EditorState>,
+    io: Io,
     indent: usize,
     sort: bool,
-    out: Out,
-    finder: Finder,
     wrap: bool,
     _subs: Vec<Subscription>,
 }
 
 impl JsonFmtView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = code_editor(
+        let (io, find_sub) = Io::new(
             r#"{"name":"SideKit","version":2,"offline":true,"tags":["developer","utilities","open-source"],"platforms":{"windows":true,"macos":true,"linux":true}}"#,
-            "Paste or type JSON",
-            "json",
+            ("json", "json"),
             window,
             cx,
         );
-        let output = code_editor("", "", "json", window, cx);
-        let (finder, find_sub) = Finder::new(&output, window, cx);
         let subs = vec![
-            watch(&input, window, cx, Self::recompute),
-            watch(&output, window, cx, |_, _, _| {}),
+            watch(&io.input, window, cx, Self::recompute),
+            watch(&io.output, window, cx, |_, _, _| {}),
             find_sub,
         ];
-        let mut this = Self { input, output, indent: 0, sort: false, out: Out::default(), finder, wrap: false, _subs: subs };
+        let mut this = Self { io, indent: 0, sort: false, wrap: false, _subs: subs };
         this.recompute(window, cx);
         this
     }
 
     pub fn set_input(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        set_text(&self.input, text, window, cx);
+        set_text(&self.io.input, text, window, cx);
         self.recompute(window, cx);
     }
 
     fn recompute(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let src = text_of(&self.input, cx);
-        self.out = if src.trim().is_empty() {
-            Out { status: "Waiting for input".into(), ..Default::default() }
-        } else {
-            let indent = match self.indent {
-                0 => Indent::Spaces(2),
-                1 => Indent::Spaces(4),
-                2 => Indent::Tab,
-                _ => Indent::Minified,
-            };
-            match logic::format_json(&src, indent, self.sort) {
-                Ok(r) => Out { text: r.out.into(), err: None, status: r.status, tone: Some(Tone::Ok) },
-                Err(e) => Out { err: Some(e), status: "Invalid JSON".into(), tone: Some(Tone::Err), ..Default::default() },
-            }
+        let indent = match self.indent {
+            0 => Indent::Spaces(2),
+            1 => Indent::Spaces(4),
+            2 => Indent::Tab,
+            _ => Indent::Minified,
         };
-        set_text(&self.output, &self.out.text, window, cx);
-        self.finder.refresh(cx);
-        cx.notify();
+        let sort = self.sort;
+        self.io.run(window, cx, |this| &mut this.io, move |src| match logic::format_json(src, indent, sort) {
+            Ok(r) => Out { text: r.out.into(), err: None, status: r.status, tone: Some(Tone::Ok) },
+            Err(e) => Out { err: Some(e), status: "Invalid JSON".into(), tone: Some(Tone::Err), ..Default::default() },
+        });
     }
 }
 
 impl Render for JsonFmtView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = Pal::get(cx);
-        sync_wrap(&[&self.input, &self.output], &mut self.wrap, window, cx);
+        sync_wrap(&[&self.io.input, &self.io.output], &mut self.wrap, window, cx);
         let on_indent = on_index(cx, |this: &mut Self, i, w, cx| {
             this.indent = i;
             this.recompute(w, cx);
@@ -275,7 +382,7 @@ impl Render for JsonFmtView {
                 })),
                 &pal,
             ))
-            .child(panes("jsonfmt", ("Input", "Output"), &self.input, &self.output, &self.finder, &self.out, window, cx, Self::recompute))
+            .child(panes("jsonfmt", ("Input", "Output"), &self.io, window, cx, Self::recompute))
     }
 }
 
@@ -284,65 +391,52 @@ impl Render for JsonFmtView {
 const YAML_INDENTS: &[&str] = &["2 spaces", "4 spaces"];
 
 pub struct JsonYamlView {
-    input: Entity<EditorState>,
-    output: Entity<EditorState>,
+    io: Io,
     indent: usize,
-    out: Out,
-    finder: Finder,
     wrap: bool,
     _subs: Vec<Subscription>,
 }
 
 impl JsonYamlView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = code_editor(
+        let (io, find_sub) = Io::new(
             "{\n  \"service\": \"api-gateway\",\n  \"replicas\": 3,\n  \"ports\": [80, 443],\n  \"env\": { \"LOG_LEVEL\": \"info\", \"CACHE\": true },\n  \"routes\": [\n    { \"path\": \"/users\", \"timeout\": 30 },\n    { \"path\": \"/orders\", \"timeout\": 45 }\n  ]\n}",
-            "Paste or type JSON",
-            "json",
+            ("json", "yaml"),
             window,
             cx,
         );
-        let output = code_editor("", "", "yaml", window, cx);
-        let (finder, find_sub) = Finder::new(&output, window, cx);
         let subs = vec![
-            watch(&input, window, cx, Self::recompute),
-            watch(&output, window, cx, |_, _, _| {}),
+            watch(&io.input, window, cx, Self::recompute),
+            watch(&io.output, window, cx, |_, _, _| {}),
             find_sub,
         ];
-        let mut this = Self { input, output, indent: 0, out: Out::default(), finder, wrap: false, _subs: subs };
+        let mut this = Self { io, indent: 0, wrap: false, _subs: subs };
         this.recompute(window, cx);
         this
     }
 
     fn recompute(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let src = text_of(&self.input, cx);
-        self.out = if src.trim().is_empty() {
-            Out { status: "Waiting for input".into(), ..Default::default() }
-        } else {
-            match serde_json::from_str::<serde_json::Value>(&src) {
-                Ok(v) => {
-                    let y = logic::to_yaml(&v, 0, if self.indent == 0 { 2 } else { 4 });
-                    let status = format!("Converted · {}", plural(y.split('\n').count(), "line"));
-                    Out { text: y.into(), err: None, status, tone: Some(Tone::Ok) }
-                }
-                Err(e) => Out {
-                    err: Some(logic::json_err(&e)),
-                    status: "Invalid JSON".into(),
-                    tone: Some(Tone::Err),
-                    ..Default::default()
-                },
+        let step = if self.indent == 0 { 2 } else { 4 };
+        self.io.run(window, cx, |this| &mut this.io, move |src| match serde_json::from_str::<serde_json::Value>(src) {
+            Ok(v) => {
+                let y = logic::to_yaml(&v, 0, step);
+                let status = format!("Converted · {}", plural(y.split('\n').count(), "line"));
+                Out { text: y.into(), err: None, status, tone: Some(Tone::Ok) }
             }
-        };
-        set_text(&self.output, &self.out.text, window, cx);
-        self.finder.refresh(cx);
-        cx.notify();
+            Err(e) => Out {
+                err: Some(logic::json_err(&e)),
+                status: "Invalid JSON".into(),
+                tone: Some(Tone::Err),
+                ..Default::default()
+            },
+        });
     }
 }
 
 impl Render for JsonYamlView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = Pal::get(cx);
-        sync_wrap(&[&self.input, &self.output], &mut self.wrap, window, cx);
+        sync_wrap(&[&self.io.input, &self.io.output], &mut self.wrap, window, cx);
         let on_indent = on_index(cx, |this: &mut Self, i, w, cx| {
             this.indent = i;
             this.recompute(w, cx);
@@ -361,6 +455,33 @@ impl Render for JsonYamlView {
                 ui::dropdown("yindent-dd", YAML_INDENTS, self.indent, &pal, window, cx, on_indent),
                 &pal,
             ))
-            .child(panes("jsonyaml", ("JSON", "YAML"), &self.input, &self.output, &self.finder, &self.out, window, cx, Self::recompute))
+            .child(panes("jsonyaml", ("JSON", "YAML"), &self.io, window, cx, Self::recompute))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn identity(src: &str) -> Out {
+        Out { text: src.to_string().into(), ..Default::default() }
+    }
+
+    #[test]
+    fn minified_input_is_relaid_and_long_output_lines_are_shortened() {
+        let big = format!("[{}]", vec!["\"é\""; LONG_LINE].join(","));
+        let done = finish(&big, identity);
+        let input = done.input.expect("minified input is re-laid");
+        assert!(!has_long_line(&input));
+        let shown = done.shown.expect("the one-line output is shortened");
+        assert!(shown.len() <= LONG_LINE + '…'.len_utf8() && shown.ends_with('…'));
+        assert_eq!(done.out.text.len(), big.len());
+    }
+
+    #[test]
+    fn short_lines_are_left_alone() {
+        let done = finish("{\"a\": 1}", identity);
+        assert!(done.input.is_none() && done.shown.is_none());
+        assert!(finish("  ", identity).out.status.starts_with("Waiting"));
     }
 }
