@@ -2,10 +2,11 @@
 name = "sidekit"
 version = "0.1.0"
 edition = "2024"
-description = "A fast, native DevToys clone built on GPUI"
+description = "A fast, native developer toolbox built on GPUI"
+repository = "https://github.com/pratik-chakravorty/sidekit"
 
 [dependencies]
-gpui-kit = "0.6"
+gpui-kit = { version = "0.6", features = ["tree-sitter", "tree-sitter-yaml", "tree-sitter-html"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 base64 = "0.22"
@@ -16,6 +17,9 @@ getrandom = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 iana-time-zone = "0.1"
 fancy-regex = "0.14"
+
+[build-dependencies]
+winresource = "0.1"
 
 [profile.dev.package."*"]
 opt-level = 2

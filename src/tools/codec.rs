@@ -1,6 +1,6 @@
 //! Base64, URL, HTML and string-escape encoders share one view.
 
-use gpui_kit::component::input::TextareaState;
+use gpui_kit::component::input::EditorState;
 use gpui_kit::{
     Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Subscription,
     Window, div, prelude::FluentBuilder, px,
@@ -54,8 +54,8 @@ fn spec(id: ToolId) -> Spec {
 
 pub struct CodecView {
     spec: Spec,
-    input: Entity<TextareaState>,
-    output: Entity<TextareaState>,
+    input: Entity<EditorState>,
+    output: Entity<EditorState>,
     decode: bool,
     out: SharedString,
     err: Option<&'static str>,
@@ -65,8 +65,9 @@ pub struct CodecView {
 impl CodecView {
     pub fn new(id: ToolId, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let spec = spec(id);
-        let input = editor(spec.sample, "Type or paste text", window, cx);
-        let output = editor("", "", window, cx);
+        let language = if id == ToolId::Html { "html" } else { "plaintext" };
+        let input = code_editor(spec.sample, "Type or paste text", language, window, cx);
+        let output = code_editor("", "", language, window, cx);
         for s in [&input, &output] {
             s.update(cx, |s, cx| s.set_soft_wrap(true, window, cx));
         }
@@ -134,6 +135,7 @@ impl Render for CodecView {
             this.recompute(w, cx);
         });
         let [paste, clear] = paste_clear("codec", &self.input, &pal, cx, Self::recompute);
+        let zoom = ui::PaneZoom::new("codec-output", window, cx);
 
         div()
             .flex()
@@ -160,21 +162,23 @@ impl Render for CodecView {
                         ui::pane(is_focused(&self.input, window, cx), &pal)
                             .flex_1()
                             .child(ui::pane_head("Input", None, &pal).child(paste).child(clear))
-                            .child(editor_el(&self.input, false, cx))
+                            .child(code_editor_el(&self.input, false, cx))
                             .child(ui::pane_foot(&pal).child(in_stat)),
                     )
-                    .child(
+                    .child(zoom.wrap(
                         ui::pane(is_focused(&self.output, window, cx), &pal)
                             .flex_1()
                             .child(
                                 ui::pane_head("Output", None, &pal)
                                     .child(ui::icon_btn("codec-swap", "swap", &pal, cx.listener(|this, _, w, cx| this.swap(w, cx))))
-                                    .child(ui::copy_btn("codec-copy", self.out.clone(), &pal, window, cx)),
+                                    .child(ui::copy_btn("codec-copy", self.out.clone(), &pal, window, cx))
+                                    .child(zoom.button(&pal)),
                             )
                             .when_some(self.err, |d, e| d.child(ui::err_box(e, &pal).m(px(12.))))
-                            .child(editor_el(&self.output, true, cx))
+                            .child(code_editor_el(&self.output, true, cx))
                             .child(ui::pane_foot(&pal).child(ui::dot(tone, &pal)).child(out_stat)),
-                    ),
+                        &pal, window,
+                    )),
             )
     }
 }

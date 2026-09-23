@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=SideKit
+GenericName=Developer Toolbox
+Comment=Formatters, encoders, generators and converters for developers
+Exec=sidekit
+Icon=sidekit
+Terminal=false
+Categories=Development;Utility;
+Keywords=json;yaml;base64;jwt;hash;uuid;regex;color;developer;
+StartupWMClass=sidekit

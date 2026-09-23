@@ -1,4 +1,4 @@
-use gpui_kit::component::input::TextareaState;
+use gpui_kit::component::input::{EditorState, TextareaState};
 use gpui_kit::{
     Context, Entity, FontWeight, IntoElement, ParentElement, Render, SharedString, Styled,
     Subscription, Window, div, prelude::FluentBuilder, px,
@@ -89,8 +89,8 @@ fn sample() -> String {
 
 pub struct JwtView {
     token: Entity<TextareaState>,
-    header: Entity<TextareaState>,
-    payload: Entity<TextareaState>,
+    header: Entity<EditorState>,
+    payload: Entity<EditorState>,
     wrap: bool,
     _subs: Vec<Subscription>,
 }
@@ -99,8 +99,8 @@ impl JwtView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let token = editor(&sample(), "Paste a JSON Web Token", window, cx);
         token.update(cx, |s, cx| s.set_soft_wrap(true, window, cx));
-        let header = editor("", "", window, cx);
-        let payload = editor("", "", window, cx);
+        let header = code_editor("", "", "json", window, cx);
+        let payload = code_editor("", "", "json", window, cx);
         let subs = vec![
             watch(&token, window, cx, Self::recompute),
             watch(&header, window, cx, |_, _, _| {}),
@@ -169,24 +169,32 @@ impl Render for JwtView {
         }
         let header_text: SharedString = decoded.as_ref().map(|d| d.header.clone()).unwrap_or_default().into();
         let payload_text: SharedString = decoded.as_ref().map(|d| d.payload.clone()).unwrap_or_default().into();
+        let header_zoom = ui::PaneZoom::new("jwt-header", window, cx);
+        let payload_zoom = ui::PaneZoom::new("jwt-payload", window, cx);
         root = root.child(
             div()
                 .flex()
                 .gap(px(12.))
-                .child(
+                .child(header_zoom.wrap(
                     ui::pane(is_focused(&self.header, window, cx), &pal)
                         .flex_1()
                         .h(px(200.))
-                        .child(ui::pane_head("Header", Some(pal.tok_h), &pal).child(ui::copy_btn("jwt-h", header_text, &pal, window, cx)))
-                        .child(editor_el(&self.header, true, cx)),
-                )
-                .child(
+                        .child(ui::pane_head("Header", Some(pal.tok_h), &pal)
+                            .child(ui::copy_btn("jwt-h", header_text, &pal, window, cx))
+                            .child(header_zoom.button(&pal)))
+                        .child(code_editor_el(&self.header, true, cx)),
+                    &pal, window,
+                ))
+                .child(payload_zoom.wrap(
                     ui::pane(is_focused(&self.payload, window, cx), &pal)
                         .flex_1()
                         .h(px(200.))
-                        .child(ui::pane_head("Payload", Some(pal.tok_p), &pal).child(ui::copy_btn("jwt-p", payload_text, &pal, window, cx)))
-                        .child(editor_el(&self.payload, true, cx)),
-                ),
+                        .child(ui::pane_head("Payload", Some(pal.tok_p), &pal)
+                            .child(ui::copy_btn("jwt-p", payload_text, &pal, window, cx))
+                            .child(payload_zoom.button(&pal)))
+                        .child(code_editor_el(&self.payload, true, cx)),
+                    &pal, window,
+                )),
         );
         if let Some(d) = decoded.filter(|d| !d.rows.is_empty()) {
             let n = d.rows.len();

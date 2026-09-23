@@ -86,14 +86,3 @@ pub const TOOLS: &[Tool] = &[
 pub fn tool(id: ToolId) -> &'static Tool {
     TOOLS.iter().find(|t| t.id == id).unwrap()
 }
-
-impl Tool {
-    /// The design's search: substring over name, title and description.
-    pub fn matches(&self, q: &str) -> bool {
-        if q.is_empty() {
-            return true;
-        }
-        let hay = format!("{} {} {}", self.name, self.title, self.desc).to_lowercase();
-        hay.contains(q)
-    }
-}

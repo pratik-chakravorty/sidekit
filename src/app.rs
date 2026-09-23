@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::time::Duration;
 
-use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::{
     Animation, AnimationExt, AnyElement, AnyView, App, AppContext, Context, Div, Entity,
@@ -63,8 +62,6 @@ struct Suggestion {
 pub struct SideKit {
     view: View,
     history: Vec<View>,
-    search: Entity<InputState>,
-    query: String,
     home_cat: Option<Cat>,
     /// Explicit open/closed choices for nav groups, keyed by group.
     open_groups: HashMap<&'static str, bool>,
@@ -84,15 +81,6 @@ pub struct SideKit {
 
 impl SideKit {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search tools").clean_on_escape());
-        let sub = cx.subscribe_in(&search, window, |this, state, ev: &InputEvent, _, cx| match ev {
-            InputEvent::Change => {
-                this.query = state.read(cx).value().to_string();
-                cx.notify();
-            }
-            InputEvent::Focus | InputEvent::Blur => cx.notify(),
-            _ => {}
-        });
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let activation = cx.observe_window_activation(window, |this, window, cx| {
@@ -103,8 +91,6 @@ impl SideKit {
         let mut this = Self {
             view: View::Home,
             history: Vec::new(),
-            search,
-            query: String::new(),
             home_cat: None,
             open_groups: HashMap::new(),
             group_gen: HashMap::new(),
@@ -115,7 +101,7 @@ impl SideKit {
             seen_clipboard: None,
             focus,
             epoch: 0,
-            _subs: vec![sub, activation],
+            _subs: vec![activation],
         };
         this.check_clipboard(cx);
         this
@@ -217,10 +203,6 @@ impl SideKit {
         TOOLS.iter().filter(|t| s.is_fav(t.key)).collect()
     }
 
-    fn q(&self) -> String {
-        self.query.trim().to_lowercase()
-    }
-
     // ------------------------------------------------------------ palette
 
     fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -268,8 +250,6 @@ impl SideKit {
         let p = pal;
         let no_back = self.history.is_empty();
         let dark = pal.dark;
-        let search_focused = tools::is_focused(&self.search, window, cx);
-        let has_query = !self.query.is_empty();
 
         let tb_btn = |id: &'static str| {
             div()
@@ -284,10 +264,13 @@ impl SideKit {
         };
 
         let search = div()
+            .id("open-palette")
             .occlude()
             .flex()
             .items_center()
             .gap(px(8.))
+            .w(px(420.))
+            .max_w_full()
             .h(px(34.))
             .pl(px(12.))
             .pr(px(6.))
@@ -295,35 +278,24 @@ impl SideKit {
             .bg(p.card)
             .border_1()
             .border_color(p.stroke)
-            .shadow(vec![Pal::underline(
-                if search_focused { p.accent } else { p.stroke_strong },
-                if search_focused { 2. } else { 1. },
-            )])
-            .when(!search_focused, |d| d.hover(move |s| s.border_color(p.stroke_strong)))
-            .child(icon("search", 15., if search_focused { p.accent } else { p.text3 }))
+            .shadow(vec![Pal::underline(p.stroke_strong, 1.)])
+            .cursor_pointer()
+            .hover(move |s| s.border_color(p.stroke_strong).bg(p.card_hover))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|this, _, window, cx| this.open_palette(window, cx)))
+            .child(icon("search", 15., p.text3))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .text_size(px(13.))
-                    .child(Input::new(&self.search).appearance(false).text_size(px(13.))),
+                    .text_color(p.text3)
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child("Search tools and commands…"),
             )
-            .when(has_query, |d| {
-                d.child(
-                    ui::icon_btn("clear-q", "x", &p, cx.listener(|this, _, window, cx| {
-                        tools::set_line(&this.search, "", window, cx);
-                        this.query.clear();
-                        cx.notify();
-                    }))
-                    .size(px(24.)),
-                )
-            })
-            .when(!has_query, |d| d.child(kbd("Ctrl F", &p)))
-            .with_spring(
-                "search-w",
-                SpringAnimation::new(spring_soft()).to(search_focused),
-                |el, ph| el.w(ph.interpolate(px(420.), px(460.))),
-            );
+            .child(kbd(if cfg!(target_os = "macos") { "⌘ K" } else { "Ctrl K" }, &p));
 
         // Window chrome differs per platform:
         // - Windows: our caption buttons map to native hit-test areas (keeps Snap Layouts).
@@ -439,7 +411,7 @@ impl SideKit {
                     .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).child(APP_NAME))
                     .child(ui::badge("Offline", ui::Tone::Neutral, &p).h(px(18.)).text_size(px(10.5))),
             )
-            .child(div().flex_1().flex().justify_center().child(search))
+            .child(div().flex_1().min_w_0().flex().justify_center().child(search))
             .child(
                 tb_btn("theme")
                     .occlude()
@@ -530,7 +502,6 @@ impl SideKit {
 
     fn render_nav(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let pal = Pal::get(cx);
-        let q = self.q();
         let current_tool = match self.view {
             View::Tool(id) => Some(tool(id)),
             _ => None,
@@ -545,13 +516,13 @@ impl SideKit {
             items: Vec<&'static Tool>,
         }
         let mut groups: Vec<Group> = Vec::new();
-        let fav_matches: Vec<&'static Tool> = self.favs(cx).into_iter().filter(|t| t.matches(&q)).collect();
-        if !fav_matches.is_empty() {
-            let open = !q.is_empty() || *self.open_groups.get("fav").unwrap_or(&true);
-            groups.push(Group { key: "fav", label: "Favorites", icon: "star", divider: false, open, items: fav_matches });
+        let favs = self.favs(cx);
+        if !favs.is_empty() {
+            let open = *self.open_groups.get("fav").unwrap_or(&true);
+            groups.push(Group { key: "fav", label: "Favorites", icon: "star", divider: false, open, items: favs });
         }
         for (i, c) in CATS.iter().enumerate() {
-            let items: Vec<&'static Tool> = TOOLS.iter().filter(|t| t.cat == c.id && t.matches(&q)).collect();
+            let items: Vec<&'static Tool> = TOOLS.iter().filter(|t| t.cat == c.id).collect();
             if items.is_empty() {
                 continue;
             }
@@ -559,10 +530,9 @@ impl SideKit {
                 Some(t) => t.cat == c.id,
                 None => c.id == Cat::Conv,
             };
-            let open = !q.is_empty() || *self.open_groups.get(c.key).unwrap_or(&default_open);
+            let open = *self.open_groups.get(c.key).unwrap_or(&default_open);
             groups.push(Group { key: c.key, label: c.label, icon: c.icon, divider: i == 0 && !groups.is_empty(), open, items });
         }
-        let nav_empty = groups.is_empty();
 
         let mut list = div()
             .id("nav-list")
@@ -632,11 +602,6 @@ impl SideKit {
                 col = col.child(items);
             }
             list = list.child(col);
-        }
-        if nav_empty {
-            list = list.child(
-                div().px(px(14.)).py(px(16.)).text_size(px(13.)).text_color(pal.text3).child("No tools match your search."),
-            );
         }
 
         div()
@@ -743,24 +708,18 @@ impl SideKit {
     fn render_home(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let pal = Pal::get(cx);
         let p = pal;
-        let q = self.q();
         let favs = self.favs(cx);
         let home_tools: Vec<&'static Tool> = TOOLS
             .iter()
-            .filter(|t| t.matches(&q) && self.home_cat.is_none_or(|c| t.cat == c))
+            .filter(|t| self.home_cat.is_none_or(|c| t.cat == c))
             .collect();
-        let title: SharedString = if q.is_empty() {
-            "All tools".into()
-        } else {
-            format!("Results for “{}”", self.query.trim()).into()
-        };
         let epoch = self.epoch;
         let settings = Settings::get(cx).clone();
 
         let suggestion = self
             .suggestion
             .as_ref()
-            .filter(|_| q.is_empty() && settings.smart)
+            .filter(|_| settings.smart)
             .map(|s| {
                 let t = tool(s.tool);
                 (if t.title.contains(" / ") { t.name } else { t.title }, s.what)
@@ -792,20 +751,13 @@ impl SideKit {
                             .flex()
                             .flex_col()
                             .gap(px(6.))
-                            .child(div().text_size(px(28.)).font_weight(FontWeight::SEMIBOLD).child(title))
+                            .child(div().text_size(px(28.)).font_weight(FontWeight::SEMIBOLD).child("All tools"))
                             .child(
                                 div()
                                     .text_size(px(13.5))
                                     .text_color(p.text2)
                                     .child("A Swiss Army knife for developers. Every tool runs locally, nothing leaves your machine."),
                             ),
-                    )
-                    .child(
-                        ui::btn("open-palette", Some("search"), "Quick open", BtnKind::Normal, &p, cx.listener(|this, _, window, cx| {
-                            this.open_palette(window, cx)
-                        }))
-                        .text_color(p.text2)
-                        .child(kbd("Ctrl K", &p)),
                     ),
             ))
             .when_some(suggestion, |d, (tool_name, what)| {
@@ -842,7 +794,7 @@ impl SideKit {
                         .child(ui::icon_btn("smart-x", "x", &p, cx.listener(|this, _, _, cx| this.dismiss_suggestion(cx)))),
                 ))
             })
-            .when(q.is_empty() && !favs.is_empty(), |d| {
+            .when(!favs.is_empty(), |d| {
                 d.child(ui::enter(
                     ("home-f", epoch),
                     50,
@@ -917,7 +869,7 @@ impl SideKit {
                 d.child(ui::enter(
                     ("home-e", epoch),
                     0,
-                    div().p(px(48.)).flex().justify_center().text_size(px(14.)).text_color(p.text3).child("No tools match your search."),
+                    div().p(px(48.)).flex().justify_center().text_size(px(14.)).text_color(p.text3).child("No tools in this category."),
                 ))
             })
             .into_any_element()
@@ -1201,9 +1153,7 @@ impl Render for SideKit {
             .key_context("Shell")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &OpenPalette, window, cx| this.open_palette(window, cx)))
-            .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
-                this.search.update(cx, |s, cx| s.focus(window, cx));
-            }))
+            .on_action(cx.listener(|this, _: &FocusSearch, window, cx| this.open_palette(window, cx)))
             .on_action(cx.listener(|this, _: &GoBack, _, cx| this.back(cx)))
             .on_action(cx.listener(|this, _: &ToggleTheme, window, cx| this.toggle_theme(window, cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.go(View::Settings, window, cx)))

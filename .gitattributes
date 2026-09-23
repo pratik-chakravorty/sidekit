@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings or `sh` rejects them on macOS/Linux.
+*.sh text eol=lf
+*.desktop text eol=lf
+*.plist text eol=lf

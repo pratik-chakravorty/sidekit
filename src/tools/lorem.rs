@@ -41,6 +41,7 @@ impl Render for LoremView {
             cx.notify();
         });
         let seed = self.seed;
+        let zoom = ui::PaneZoom::new("lorem-output", window, cx);
 
         div()
             .flex()
@@ -64,7 +65,7 @@ impl Render for LoremView {
                 field_el(&self.count, false, 32., 13., window, cx).w(px(90.)),
                 &pal,
             ))
-            .child(
+            .child(zoom.wrap(
                 ui::pane(false, &pal)
                     .flex_1()
                     .min_h(px(280.))
@@ -75,7 +76,8 @@ impl Render for LoremView {
                                 this.seed += 1;
                                 cx.notify();
                             })))
-                            .child(ui::copy_btn("lo-copy", out.clone(), &pal, window, cx)),
+                            .child(ui::copy_btn("lo-copy", out.clone(), &pal, window, cx))
+                            .child(zoom.button(&pal)),
                     )
                     .child(
                         div()
@@ -91,6 +93,7 @@ impl Render for LoremView {
                             .child(ui::enter(crate::id!("lo-text-{seed}"), 0, div().whitespace_normal().child(out))),
                     )
                     .child(ui::pane_foot(&pal).child(stat)),
-            )
+                &pal, window,
+            ))
     }
 }

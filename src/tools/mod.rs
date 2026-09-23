@@ -14,7 +14,11 @@ mod regex;
 mod textcase;
 mod uuid;
 
-use gpui_kit::component::input::{InputEvent, InputState, Textarea, TextareaState, Input};
+#[cfg(test)]
+mod syntax_tests;
+
+use gpui_kit::base::input::{InputBaseState, MultiLineMode};
+use gpui_kit::component::input::{Editor, EditorState, InputEvent, InputState, Textarea, TextareaState, Input};
 use gpui_kit::{
     AnyView, App, AppContext, Context, Entity, Focusable, IntoElement, ParentElement, Styled,
     Subscription, Window, div, prelude::FluentBuilder, px, relative,
@@ -109,6 +113,27 @@ pub fn editor<V: 'static>(
     })
 }
 
+/// A syntax-aware editor with the same editing behavior as the plain text panes.
+pub fn code_editor<V: 'static>(
+    value: &str,
+    placeholder: &str,
+    language: &'static str,
+    window: &mut Window,
+    cx: &mut Context<V>,
+) -> Entity<EditorState> {
+    cx.new(|cx| {
+        EditorState::new(window, cx)
+            .language(language)
+            .line_number(false)
+            .folding(false)
+            .auto_close(false)
+            .smart_indent(false)
+            .soft_wrap(false)
+            .placeholder(placeholder.to_string())
+            .default_value(value.to_string())
+    })
+}
+
 /// A single-line input state preloaded with `value`.
 pub fn line<V: 'static>(
     value: &str,
@@ -139,7 +164,7 @@ pub fn is_focused<S: Focusable>(state: &Entity<S>, window: &Window, cx: &App) ->
     state.read(cx).focus_handle(cx).contains_focused(window, cx)
 }
 
-pub fn text_of(state: &Entity<TextareaState>, cx: &App) -> String {
+pub fn text_of<M: MultiLineMode>(state: &Entity<InputBaseState<M>>, cx: &App) -> String {
     state.read(cx).value().to_string()
 }
 
@@ -148,7 +173,7 @@ pub fn line_text(state: &Entity<InputState>, cx: &App) -> String {
 }
 
 /// Replace an editor's text without emitting a change event.
-pub fn set_text(state: &Entity<TextareaState>, text: &str, window: &mut Window, cx: &mut App) {
+pub fn set_text<M: MultiLineMode>(state: &Entity<InputBaseState<M>>, text: &str, window: &mut Window, cx: &mut App) {
     if state.read(cx).value().as_ref() != text {
         let text = text.to_string();
         state.update(cx, |s, cx| s.set_value(text, window, cx));
@@ -162,8 +187,8 @@ pub fn set_line(state: &Entity<InputState>, text: &str, window: &mut Window, cx:
 
 /// Keep editors' soft wrap in line with the "Wrap long lines" setting.
 /// `applied` remembers what was last pushed, since the state has no getter.
-pub fn sync_wrap(
-    states: &[&Entity<TextareaState>],
+pub fn sync_wrap<M: MultiLineMode>(
+    states: &[&Entity<InputBaseState<M>>],
     applied: &mut bool,
     window: &mut Window,
     cx: &mut App,
@@ -194,6 +219,23 @@ pub fn editor_el(state: &Entity<TextareaState>, readonly: bool, cx: &App) -> gpu
         )
 }
 
+/// Syntax-aware surface, retaining selection, copy, search and read-only behavior.
+pub fn code_editor_el(state: &Entity<EditorState>, readonly: bool, cx: &App) -> gpui_kit::Div {
+    let fs = Settings::get(cx).font_size as f32;
+    div()
+        .flex_1()
+        .min_h_0()
+        .font_family(MONO_FONT)
+        .child(
+            Editor::new(state)
+                .appearance(false)
+                .readonly(readonly)
+                .h_full()
+                .text_size(px(fs))
+                .line_height(relative(1.65)),
+        )
+}
+
 /// A single-line input inside a design `.field` frame.
 pub fn field_el(state: &Entity<InputState>, mono: bool, height: f32, font: f32, window: &Window, cx: &App) -> gpui_kit::Div {
     let pal = Pal::get(cx);
@@ -211,9 +253,9 @@ pub fn field_el(state: &Entity<InputState>, mono: bool, height: f32, font: f32, 
 }
 
 /// Paste and Clear buttons for an input pane head.
-pub fn paste_clear<V: 'static>(
+pub fn paste_clear<V: 'static, M: MultiLineMode>(
     id: &'static str,
-    state: &Entity<TextareaState>,
+    state: &Entity<InputBaseState<M>>,
     pal: &Pal,
     cx: &mut Context<V>,
     after: impl Fn(&mut V, &mut Window, &mut Context<V>) + Clone + 'static,

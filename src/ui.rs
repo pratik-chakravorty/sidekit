@@ -511,6 +511,95 @@ pub fn pane(focused: bool, pal: &Pal) -> Div {
         .when(!focused, |d| d.border_color(pal.stroke))
 }
 
+struct PaneZoomState {
+    expanded: bool,
+    focus: gpui_kit::FocusHandle,
+    previous_focus: Option<gpui_kit::FocusHandle>,
+}
+
+/// Moves a single pane into a window-sized overlay without duplicating its editor.
+pub struct PaneZoom {
+    id: ElementId,
+    state: gpui_kit::Entity<PaneZoomState>,
+    expanded: bool,
+    focus: gpui_kit::FocusHandle,
+}
+
+impl PaneZoom {
+    pub fn new(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> Self {
+        let id = id.into();
+        let state = window.use_keyed_state(child(&id, "zoom"), cx, |_, cx| PaneZoomState {
+            expanded: false,
+            focus: cx.focus_handle(),
+            previous_focus: None,
+        });
+        let expanded = state.read(cx).expanded;
+        let focus = state.read(cx).focus.clone();
+        Self { id, state, expanded, focus }
+    }
+
+    pub fn button(&self, pal: &Pal) -> Stateful<Div> {
+        let state = self.state.clone();
+        let label = if self.expanded { "Restore pane (Esc)" } else { "Expand pane" };
+        icon_btn(child(&self.id, "zoom-button"), if self.expanded { "shrink" } else { "expand" }, pal, move |_, window, cx| {
+            state.update(cx, |s, cx| {
+                if s.expanded {
+                    s.expanded = false;
+                    if let Some(focus) = s.previous_focus.take() {
+                        window.focus(&focus, cx);
+                    }
+                } else {
+                    s.previous_focus = window.focused(cx);
+                    s.expanded = true;
+                    window.focus(&s.focus, cx);
+                }
+                cx.notify();
+            });
+            window.refresh();
+        })
+        .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(label).build(w, cx))
+    }
+
+    pub fn wrap(&self, pane: Div, pal: &Pal, window: &Window) -> AnyElement {
+        if !self.expanded {
+            return pane.into_any_element();
+        }
+        let viewport = window.viewport_size();
+        let state = self.state.clone();
+        let overlay = div()
+            .id(child(&self.id, "expanded"))
+            .occlude()
+            .track_focus(&self.focus)
+            .w(viewport.width)
+            .h((viewport.height - px(48.)).max(px(0.)))
+            .p(px(16.))
+            .bg(pal.layer)
+            .flex()
+            .flex_col()
+            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .capture_key_down(move |ev, window, cx| {
+                if ev.keystroke.key == "escape" {
+                    state.update(cx, |s, cx| {
+                        s.expanded = false;
+                        if let Some(focus) = s.previous_focus.take() {
+                            window.focus(&focus, cx);
+                        }
+                        cx.notify();
+                    });
+                    window.refresh();
+                    cx.stop_propagation();
+                }
+            })
+            .child(pane.m_0().size_full().min_h_0());
+        div()
+            .flex_1()
+            .min_w_0()
+            .child(deferred(anchored().position(point(px(0.), px(48.))).child(overlay)).with_priority(1))
+            .into_any_element()
+    }
+}
+
 /// `.pane-head`.
 pub fn pane_head(title: impl Into<SharedString>, title_color: Option<Hsla>, pal: &Pal) -> Div {
     div()

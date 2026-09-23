@@ -1,0 +1,159 @@
+# Builds SideKit for Windows, macOS and Linux and publishes a GitHub Release.
+#
+# Trigger: push a tag like `v0.1.0` (or run manually and pass a tag).
+# Assets (consumed by install.sh / install.ps1 — keep the names in sync):
+#   sidekit-windows-x86_64.zip
+#   sidekit-macos-universal.zip   (SideKit.app)
+#   sidekit-macos-universal.dmg
+#   sidekit-linux-x86_64.tar.gz
+#   sidekit-linux-aarch64.tar.gz
+#   SHA256SUMS
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.98.0"
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Install Rust
+        run: rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path target/release/sidekit.exe -DestinationPath dist/sidekit-windows-x86_64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target aarch64-apple-darwin --target x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (Apple silicon and Intel)
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+      - name: Bundle SideKit.app
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          APP=dist/SideKit.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          lipo -create -output "$APP/Contents/MacOS/sidekit" \
+            target/aarch64-apple-darwin/release/sidekit \
+            target/x86_64-apple-darwin/release/sidekit
+          sed "s/__VERSION__/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
+
+          ICONSET=$(mktemp -d)/SideKit.iconset
+          mkdir -p "$ICONSET"
+          SRC=assets/icon/icon-macos-1024.png
+          for s in 16 32 128 256 512; do
+            sips -z $s $s "$SRC" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+            sips -z $((s*2)) $((s*2)) "$SRC" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+          done
+          iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/SideKit.icns"
+
+          # Ad-hoc signature: required for Apple silicon to run the universal binary.
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+      - name: Package zip and dmg
+        run: |
+          set -euo pipefail
+          cd dist
+          ditto -c -k --keepParent SideKit.app sidekit-macos-universal.zip
+          mkdir dmg && cp -R SideKit.app dmg/ && ln -s /Applications dmg/Applications
+          hdiutil create -volname SideKit -srcfolder dmg -ov -format UDZO sidekit-macos-universal.dmg
+          rm -rf dmg SideKit.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+
+  linux:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config cmake clang \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-xcb-dev libxcb1-dev libfontconfig1-dev libfreetype-dev \
+            libvulkan-dev libzstd-dev
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package
+        run: |
+          set -euo pipefail
+          PKG=dist/sidekit
+          mkdir -p "$PKG"
+          install -m755 target/release/sidekit "$PKG/sidekit"
+          install -m644 packaging/linux/sidekit.desktop "$PKG/sidekit.desktop"
+          install -m644 assets/icon/icon-512.png "$PKG/sidekit.png"
+          tar -C dist -czf "dist/sidekit-linux-${{ matrix.arch }}.tar.gz" sidekit
+          rm -rf "$PKG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/*
+
+  release:
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: SideKit ${{ env.TAG }}
+          generate_release_notes: true
+          files: dist/*

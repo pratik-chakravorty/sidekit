@@ -106,6 +106,7 @@ impl Render for RegexView {
         let pattern_focused = is_focused(&self.pattern, window, cx);
         let [paste, clear] = paste_clear("rx", &self.text, &pal, cx, |_: &mut Self, _, cx| cx.notify());
         let fs = crate::settings::Settings::get(cx).font_size as f32;
+        let zoom = ui::PaneZoom::new("regex-matches", window, cx);
 
         let flag_btns = FLAGS.iter().enumerate().map(|(i, (k, title))| {
             let on = self.flags[i];
@@ -175,10 +176,12 @@ impl Render for RegexView {
                             .child(ui::pane_head("Text", None, &pal).child(paste).child(clear))
                             .child(editor_el(&self.text, false, cx)),
                     )
-                    .child(
+                    .child(zoom.wrap(
                         ui::pane(false, &pal)
                             .flex_1()
-                            .child(ui::pane_head("Matches", None, &pal).child(ui::badge(count_label, count_tone, &pal).mr(px(8.))))
+                            .child(ui::pane_head("Matches", None, &pal)
+                                .child(ui::badge(count_label, count_tone, &pal).mr(px(8.)))
+                                .child(zoom.button(&pal)))
                             .child(
                                 div()
                                     .id("rx-out")
@@ -192,7 +195,8 @@ impl Render for RegexView {
                                     .line_height(relative(1.65))
                                     .child(styled),
                             ),
-                    ),
+                        &pal, window,
+                    )),
             )
             .when(!matches.is_empty(), |d| {
                 let n = matches.len();
