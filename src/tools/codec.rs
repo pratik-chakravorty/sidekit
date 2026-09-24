@@ -140,6 +140,13 @@ impl CodecView {
     }
 
     pub fn set_decode(&mut self, decode: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // The sample is plain text, so drop it when decoding and bring it back for encoding.
+        let input = text_of(&self.input, cx);
+        if decode && input == self.spec.sample {
+            set_text(&self.input, "", window, cx);
+        } else if !decode && input.is_empty() {
+            set_text(&self.input, self.spec.sample, window, cx);
+        }
         self.decode = decode;
         self.recompute(window, cx);
     }

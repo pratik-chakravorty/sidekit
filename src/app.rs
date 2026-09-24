@@ -10,10 +10,11 @@ use gpui_kit::{
     FocusHandle, Focusable, FontWeight, InteractiveElement, IntoElement, KeyBinding,
     ParentElement, Render, SharedString, SpringAnimation, Stateful, StatefulInteractiveElement,
     Decorations, MouseButton, MouseDownEvent, Styled, Subscription, Transformation, Window,
-    WindowControlArea, actions, div,
+    Task, WindowControlArea, actions, div,
     prelude::FluentBuilder, px, radians, relative, size,
 };
 
+use crate::hotkey::{self, Hotkey};
 use crate::icons::icon;
 use crate::id;
 use crate::library_view::{LibraryEvent, LibraryView};
@@ -22,6 +23,7 @@ use crate::registry::{CATS, Cat, TOOLS, Tool, ToolId, cat, tool};
 use crate::settings::Settings;
 use crate::theme::{self, Pal};
 use crate::tools;
+use crate::tray::{self, Tray, TrayMsg};
 use crate::ui::{self, BtnKind, mix, spring_soft};
 
 actions!(sidekit, [OpenPalette, FocusSearch, GoBack, ToggleTheme, OpenSettings]);
@@ -82,6 +84,10 @@ pub struct SideKit {
     seen_clipboard: Option<String>,
     /// Bumped on every navigation so entry animations replay.
     epoch: usize,
+    hotkey: Hotkey,
+    tray: Tray,
+    _hotkey_task: Task<()>,
+    _tray_task: Task<()>,
     _subs: Vec<Subscription>,
 }
 
@@ -113,6 +119,38 @@ impl SideKit {
                 }
             }
         });
+        let (mut hotkey, presses) = Hotkey::new();
+        hotkey.set(Settings::get(cx).hotkey);
+        let hotkey_task = cx.spawn_in(window, async move |this, cx| {
+            while presses.recv().await.is_ok() {
+                if this.update_in(cx, |this, window, cx| this.summon(window, cx)).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut tray = Tray::default();
+        tray.set(tray::SUPPORTED && Settings::get(cx).tray);
+        let tray_events = tray::events();
+        let tray_task = cx.spawn_in(window, async move |this, cx| {
+            while let Ok(msg) = tray_events.recv().await {
+                let done = this.update_in(cx, |_, window, cx| match msg {
+                    TrayMsg::Open => tray::show(window, cx),
+                    TrayMsg::Quit => cx.quit(),
+                });
+                if done.is_err() {
+                    break;
+                }
+            }
+        });
+        // With the tray on, closing only hides the window so the shortcut keeps working.
+        window.on_window_should_close(cx, |window, cx| {
+            if tray::SUPPORTED && Settings::get(cx).tray {
+                tray::hide(window, cx);
+                false
+            } else {
+                true
+            }
+        });
         let mut this = Self {
             view: View::Home,
             history: Vec::new(),
@@ -127,6 +165,10 @@ impl SideKit {
             seen_clipboard: None,
             focus,
             epoch: 0,
+            hotkey,
+            tray,
+            _hotkey_task: hotkey_task,
+            _tray_task: tray_task,
             _subs: vec![activation, lib_nav, appearance],
         };
         this.check_clipboard(cx);
@@ -159,6 +201,26 @@ impl SideKit {
             tools::fill(s.tool, &view, &s.text, window, cx);
         }
         cx.notify();
+    }
+
+    /// Global hotkey: come forward with the clipboard's tool open, or the
+    /// palette when nothing fits. Pressed again while in front, step aside.
+    fn summon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.is_window_active() {
+            if tray::SUPPORTED && Settings::get(cx).tray {
+                tray::hide(window, cx);
+            } else {
+                window.minimize_window();
+            }
+            return;
+        }
+        tray::show(window, cx);
+        self.check_clipboard(cx);
+        if self.suggestion.is_some() {
+            self.accept_suggestion(window, cx);
+        } else {
+            self.open_palette(window, cx);
+        }
     }
 
     fn dismiss_suggestion(&mut self, cx: &mut Context<Self>) {
@@ -1064,6 +1126,35 @@ impl SideKit {
                                 &pal,
                             ))
                             .child(ui::setting(
+                                "s-hotkey",
+                                ui::setting_icon("keyboard", &pal),
+                                "Global shortcut",
+                                Some(match &self.hotkey.error {
+                                    Some(e) if s.hotkey => e.clone().into(),
+                                    _ => format!("Press {} in any app to open SideKit with your clipboard", hotkey::LABEL).into(),
+                                }),
+                                ui::toggle_labeled("s-hotkey-tg", s.hotkey, &pal, cx.listener(|this, _, _, cx| {
+                                    Settings::update(cx, |s| s.hotkey = !s.hotkey);
+                                    this.hotkey.set(Settings::get(cx).hotkey);
+                                    cx.notify();
+                                })),
+                                &pal,
+                            ))
+                            .when(tray::SUPPORTED, |d| {
+                                d.child(ui::setting(
+                                    "s-tray",
+                                    ui::setting_icon("tray", &pal),
+                                    "Keep running when closed",
+                                    Some(format!("Closing the window leaves SideKit in the {} so the shortcut still works", tray::PLACE).into()),
+                                    ui::toggle_labeled("s-tray-tg", s.tray, &pal, cx.listener(|this, _, _, cx| {
+                                        Settings::update(cx, |s| s.tray = !s.tray);
+                                        this.tray.set(Settings::get(cx).tray);
+                                        cx.notify();
+                                    })),
+                                    &pal,
+                                ))
+                            })
+                            .child(ui::setting(
                                 "s-favs",
                                 ui::setting_icon("star", &pal),
                                 "Favorites",
@@ -1095,7 +1186,7 @@ impl SideKit {
                                     .justify_center()
                                     .child(icon("logo@2.6", 12., pal.accent_text)),
                                 APP_NAME,
-                                Some(format!("Version {} · Open source · Runs fully offline", env!("CARGO_PKG_VERSION")).into()),
+                                Some(format!("Version {} · Open source · Runs fully offline", env!("SIDEKIT_VERSION")).into()),
                                 div(),
                                 &pal,
                             )),

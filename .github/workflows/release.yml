@@ -26,6 +26,8 @@ env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: "1.98.0"
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  # Read by build.rs: the version shown in the app is the release tag.
+  SIDEKIT_VERSION: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   windows:

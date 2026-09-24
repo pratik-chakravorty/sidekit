@@ -1,6 +1,6 @@
 [package]
 name = "sidekit"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2024"
 description = "A fast, native developer toolbox built on GPUI"
 repository = "https://github.com/pratik-chakravorty/sidekit"
@@ -25,6 +25,8 @@ serde_json_path = "0.7"
 similar = "3"
 x509-parser = "0.18"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+global-hotkey = "0.8.0"
+async-channel = "2"
 
 [build-dependencies]
 winresource = "0.1"
@@ -38,3 +40,13 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tray-icon = "0.21"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+png = "0.18"

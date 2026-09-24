@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod hotkey;
 mod icons;
 mod library;
 mod library_view;
@@ -10,6 +11,7 @@ mod registry;
 mod settings;
 mod theme;
 mod tools;
+mod tray;
 mod ui;
 
 use std::borrow::Cow;

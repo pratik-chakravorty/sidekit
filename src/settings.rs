@@ -16,6 +16,10 @@ pub struct Settings {
     pub wrap: bool,
     pub smart: bool,
     pub font_size: u8,
+    /// System-wide shortcut that brings SideKit forward.
+    pub hotkey: bool,
+    /// Closing the window hides it to the tray instead of quitting.
+    pub tray: bool,
 }
 
 impl Default for Settings {
@@ -27,6 +31,8 @@ impl Default for Settings {
             wrap: false,
             smart: true,
             font_size: 13,
+            hotkey: true,
+            tray: true,
         }
     }
 }
