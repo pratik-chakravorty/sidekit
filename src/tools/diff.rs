@@ -4,11 +4,12 @@ use gpui_kit::component::input::EditorState;
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::{
     Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, Styled,
-    Subscription, Window, div, prelude::FluentBuilder, px, relative,
+    Subscription, Task, Window, div, prelude::FluentBuilder, px, relative,
 };
 
 use super::*;
-use crate::logic::diff::{self, Change, Side};
+use super::big;
+use crate::logic::diff::{self, Change, PathChange, Side, TextDiffOut};
 use crate::theme::MONO_FONT;
 use crate::ui::{self, Tone};
 
@@ -41,6 +42,8 @@ pub struct TextDiffView {
     a: Entity<EditorState>,
     b: Entity<EditorState>,
     ignore_ws: bool,
+    d: TextDiffOut,
+    task: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
 
@@ -48,16 +51,26 @@ impl TextDiffView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let a = code_editor("server:\n  host: localhost\n  port: 8080\n  debug: true\nfeatures:\n  - search\n  - export\n", "Original text", "plaintext", window, cx);
         let b = code_editor("server:\n  host: 0.0.0.0\n  port: 8080\nfeatures:\n  - search\n  - export\n  - sharing\n", "Changed text", "plaintext", window, cx);
-        let subs = vec![watch(&a, window, cx, |_, _, cx| cx.notify()), watch(&b, window, cx, |_, _, cx| cx.notify())];
-        Self { a, b, ignore_ws: false, _subs: subs }
+        let subs = vec![watch(&a, window, cx, Self::recompute), watch(&b, window, cx, Self::recompute)];
+        let mut this = Self { a, b, ignore_ws: false, d: diff::text_diff("", "", false), task: None, _subs: subs };
+        this.recompute(window, cx);
+        this
+    }
+
+    fn recompute(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (a, b, ws) = (text_of(&self.a, cx), text_of(&self.b, cx), self.ignore_ws);
+        let size = a.len() + b.len();
+        big::run(size, self, |v| &mut v.task, window, cx, move || diff::text_diff(&a, &b, ws), |this, d, _, cx| {
+            this.d = d;
+            cx.notify();
+        });
     }
 }
 
 impl Render for TextDiffView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = Pal::get(cx);
-        let (a, b) = (text_of(&self.a, cx), text_of(&self.b, cx));
-        let d = diff::text_diff(&a, &b, self.ignore_ws);
+        let d = &self.d;
         let fs = crate::settings::Settings::get(cx).font_size as f32;
         let same = d.added + d.removed == 0;
         let summary = if same {
@@ -94,13 +107,13 @@ impl Render for TextDiffView {
                 ui::setting_icon("length", &pal),
                 "Ignore whitespace",
                 Some("Treat runs of spaces and tabs as one, and ignore them at line ends".into()),
-                ui::toggle_labeled("td-ws-tg", self.ignore_ws, &pal, cx.listener(|this, _, _, cx| {
+                ui::toggle_labeled("td-ws-tg", self.ignore_ws, &pal, cx.listener(|this, _, w, cx| {
                     this.ignore_ws = !this.ignore_ws;
-                    cx.notify();
+                    this.recompute(w, cx);
                 })),
                 &pal,
             ))
-            .child(two_panes(("td-a", "td-b"), ("Original", "Changed"), &self.a, &self.b, window, cx, |_: &mut Self, _, cx| cx.notify()).mt(px(8.)))
+            .child(two_panes(("td-a", "td-b"), ("Original", "Changed"), &self.a, &self.b, window, cx, Self::recompute).mt(px(8.)))
             .child(
                 div()
                     .flex()
@@ -136,7 +149,15 @@ impl Render for TextDiffView {
 pub struct DataDiffView {
     a: Entity<EditorState>,
     b: Entity<EditorState>,
+    changes: Result<Vec<PathChange>, String>,
+    task: Option<Task<()>>,
     _subs: Vec<Subscription>,
+}
+
+fn data_changes(a: &str, b: &str) -> Result<Vec<PathChange>, String> {
+    let a = diff::parse_doc(a).map_err(|e| format!("Left: {e}"))?;
+    let b = diff::parse_doc(b).map_err(|e| format!("Right: {e}"))?;
+    Ok(diff::structured_diff(&a, &b))
 }
 
 impl DataDiffView {
@@ -155,34 +176,40 @@ impl DataDiffView {
             window,
             cx,
         );
-        let subs = vec![watch(&a, window, cx, |_, _, cx| cx.notify()), watch(&b, window, cx, |_, _, cx| cx.notify())];
-        Self { a, b, _subs: subs }
+        let subs = vec![watch(&a, window, cx, Self::recompute), watch(&b, window, cx, Self::recompute)];
+        let mut this = Self { a, b, changes: Ok(Vec::new()), task: None, _subs: subs };
+        this.recompute(window, cx);
+        this
+    }
+
+    fn recompute(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (a, b) = (text_of(&self.a, cx), text_of(&self.b, cx));
+        let size = a.len() + b.len();
+        big::run(size, self, |v| &mut v.task, window, cx, move || data_changes(&a, &b), |this, c, _, cx| {
+            this.changes = c;
+            cx.notify();
+        });
     }
 }
 
 impl Render for DataDiffView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = Pal::get(cx);
-        let (ta, tb) = (text_of(&self.a, cx), text_of(&self.b, cx));
-        let parsed = (diff::parse_doc(&ta), diff::parse_doc(&tb));
-
-        let body = match parsed {
-            (Err(e), _) => ui::err_box(format!("Left: {e}"), &pal).into_any_element(),
-            (_, Err(e)) => ui::err_box(format!("Right: {e}"), &pal).into_any_element(),
-            (Ok(a), Ok(b)) => {
-                let changes = diff::structured_diff(&a, &b);
+        let body = match &self.changes {
+            Err(e) => ui::err_box(e.clone(), &pal).into_any_element(),
+            Ok(changes) => {
                 if changes.is_empty() {
                     div().text_size(px(13.)).text_color(pal.text3).child("Both documents hold the same data.").into_any_element()
                 } else {
                     let n = changes.len();
                     let mut card = ui::kv_card(&pal);
-                    for (i, c) in changes.into_iter().enumerate() {
+                    for (i, c) in changes.iter().take(MAX_ROWS).enumerate() {
                         let (label, tone) = match c.change {
                             Change::Added => ("Added", Tone::Ok),
                             Change::Removed => ("Removed", Tone::Err),
                             Change::Changed => ("Changed", Tone::Info),
                         };
-                        let value = match (c.old, c.new) {
+                        let value = match (c.old.clone(), c.new.clone()) {
                             (Some(o), Some(n)) => format!("{o}  →  {n}"),
                             (Some(o), None) => o,
                             (None, Some(n)) => n,
@@ -191,7 +218,7 @@ impl Render for DataDiffView {
                         card = card.child(
                             ui::kv_row(("dd", i), i + 1 == n, &pal)
                                 .child(div().w(px(86.)).flex_none().child(ui::badge(label, tone, &pal)))
-                                .child(div().w(px(240.)).flex_none().font_family(MONO_FONT).text_size(px(13.)).font_weight(FontWeight::MEDIUM).overflow_hidden().text_ellipsis().whitespace_nowrap().child(c.path))
+                                .child(div().w(px(240.)).flex_none().font_family(MONO_FONT).text_size(px(13.)).font_weight(FontWeight::MEDIUM).overflow_hidden().text_ellipsis().whitespace_nowrap().child(c.path.clone()))
                                 .child(ui::kv_val(value, true).text_color(pal.text2)),
                         );
                     }
@@ -205,7 +232,7 @@ impl Render for DataDiffView {
             .flex_col()
             .gap(px(6.))
             .child(div().text_size(px(13.)).text_color(pal.text2).child("Paste JSON or YAML on each side. Key order is ignored; arrays are compared item by item."))
-            .child(two_panes(("dd-a", "dd-b"), ("Before", "After"), &self.a, &self.b, window, cx, |_: &mut Self, _, cx| cx.notify()).mt(px(8.)))
+            .child(two_panes(("dd-a", "dd-b"), ("Before", "After"), &self.a, &self.b, window, cx, Self::recompute).mt(px(8.)))
             .child(ui::section_label("Changes", &pal).mt(px(14.)))
             .child(body)
     }

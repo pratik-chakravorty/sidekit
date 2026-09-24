@@ -31,7 +31,10 @@ fn squash(s: &str) -> String {
 /// (the lines shown are the normalized ones).
 pub fn text_diff(a: &str, b: &str, ignore_ws: bool) -> TextDiffOut {
     let (a, b) = if ignore_ws { (squash(a), squash(b)) } else { (a.replace("\r\n", "\n"), b.replace("\r\n", "\n")) };
-    let diff = TextDiff::from_lines(&a, &b);
+    // Myers' diff is O(N·D): two large, very different texts could run for
+    // minutes. Past the deadline `similar` settles for a coarser (still
+    // correct) diff.
+    let diff = TextDiff::configure().timeout(std::time::Duration::from_secs(2)).diff_lines(&a, &b);
     let mut out = TextDiffOut { lines: Vec::new(), added: 0, removed: 0 };
     for c in diff.iter_all_changes() {
         let side = match c.tag() {

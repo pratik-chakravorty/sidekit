@@ -1,6 +1,7 @@
 //! One view per tool. Views are created lazily the first time a tool opens,
 //! which keeps start-up work to the chrome and the home grid.
 
+pub mod big;
 mod cert;
 mod codec;
 mod color;
@@ -234,6 +235,11 @@ pub fn is_focused<S: Focusable>(state: &Entity<S>, window: &Window, cx: &App) ->
 
 pub fn text_of<M: MultiLineMode>(state: &Entity<InputBaseState<M>>, cx: &App) -> String {
     state.read(cx).value().to_string()
+}
+
+/// Byte length of an editor's text, without copying it.
+pub fn text_len<M: MultiLineMode>(state: &Entity<InputBaseState<M>>, cx: &App) -> usize {
+    state.read(cx).text().len()
 }
 
 pub fn line_text(state: &Entity<InputState>, cx: &App) -> String {

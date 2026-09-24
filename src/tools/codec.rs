@@ -2,11 +2,12 @@
 
 use gpui_kit::component::input::EditorState;
 use gpui_kit::{
-    Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Subscription,
+    Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Task,
     Window, div, prelude::FluentBuilder, px,
 };
 
 use super::*;
+use super::big;
 use crate::logic::{self, plural};
 use crate::registry::ToolId;
 use crate::ui::{self, Tone};
@@ -64,8 +65,12 @@ pub struct CodecView {
     input: Entity<EditorState>,
     output: Entity<EditorState>,
     decode: bool,
+    language: &'static str,
     out: SharedString,
     err: Option<&'static str>,
+    /// The output pane holds only part of `out`.
+    shortened: bool,
+    task: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
 
@@ -82,29 +87,49 @@ impl CodecView {
             watch(&input, window, cx, Self::recompute),
             watch(&output, window, cx, |_, _, _| {}),
         ];
-        let mut this = Self { spec, input, output, decode: false, out: SharedString::default(), err: None, _subs: subs };
+        let mut this = Self {
+            spec,
+            input,
+            output,
+            decode: false,
+            language,
+            out: SharedString::default(),
+            err: None,
+            shortened: false,
+            task: None,
+            _subs: subs,
+        };
         this.recompute(window, cx);
         this
     }
 
     fn recompute(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = text_of(&self.input, cx);
-        let (out, err) = if input.is_empty() {
-            (String::new(), None)
-        } else {
-            let f = if self.decode { self.spec.dec } else { self.spec.enc };
+        big::fit_language(&self.input, self.language, input.len(), cx);
+        let decode = self.decode;
+        let f = if decode { self.spec.dec } else { self.spec.enc };
+        let work = move || {
+            if input.is_empty() {
+                return (String::new(), None);
+            }
             match f(&input) {
                 Ok(o) => (o, None),
                 Err(()) => (
                     String::new(),
-                    Some(if self.decode { "This input is not valid for decoding." } else { "Could not encode this input." }),
+                    Some(if decode { "This input is not valid for decoding." } else { "Could not encode this input." }),
                 ),
             }
         };
-        self.out = out.into();
-        self.err = err;
-        set_text(&self.output, &self.out, window, cx);
-        cx.notify();
+        let size = text_len(&self.input, cx);
+        big::run(size, self, |t| &mut t.task, window, cx, work, |this, (out, err), window, cx| {
+            let shown = big::for_display(&out);
+            this.shortened = shown.is_some();
+            big::fit_language(&this.output, this.language, out.len(), cx);
+            set_text(&this.output, shown.as_deref().unwrap_or(&out), window, cx);
+            this.out = out.into();
+            this.err = err;
+            cx.notify();
+        });
     }
 
     /// Load clipboard content; encoded input implies decoding.
@@ -138,6 +163,8 @@ impl Render for CodecView {
         let in_stat = format!("{} · {}", plural(input.encode_utf16().count(), "character"), plural(input.len(), "byte"));
         let out_stat = if self.err.is_some() {
             "Error".to_string()
+        } else if self.shortened {
+            format!("{} · {}", plural(self.out.len(), "byte"), big::SHORTENED)
         } else {
             format!("{} · {}", plural(self.out.encode_utf16().count(), "character"), plural(self.out.len(), "byte"))
         };

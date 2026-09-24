@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use gpui_kit::component::input::{Input, InputEvent, InputState, EditorState};
 use gpui_kit::{
     App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
@@ -7,19 +5,12 @@ use gpui_kit::{
 };
 
 use super::*;
+use super::big::{self, has_long_line};
 use crate::logic::{self, Indent, plural};
 use crate::registry::ToolId;
 use crate::ui::{self, Tone};
 
-/// The editor shapes and paints each visible line in full on every frame, so a
-/// multi-megabyte line (minified JSON) drags the whole window down. Lines longer
-/// than this are kept out of the editors.
-const LONG_LINE: usize = 64 * 1024;
-/// Inputs larger than this are processed off the UI thread once typing pauses.
-const LARGE_INPUT: usize = 256 * 1024;
-const DEBOUNCE: Duration = Duration::from_millis(150);
-
-/// Output state shared by the two JSON tools.
+/// Output state shared by the JSON tools.
 #[derive(Default)]
 struct Out {
     /// The full result; Copy takes this even when the editor shows a shortened view.
@@ -32,27 +23,10 @@ struct Out {
 /// A finished computation, ready to show.
 struct Done {
     out: Out,
-    /// The output with over-long lines cut short, when it has any.
+    /// What the output pane shows when the full result is too large to edit comfortably.
     shown: Option<String>,
     /// A re-laid copy of an input whose lines are too long to edit comfortably.
     input: Option<String>,
-}
-
-fn has_long_line(s: &str) -> bool {
-    s.split('\n').any(|l| l.len() > LONG_LINE)
-}
-
-fn clip_long_lines(s: &str) -> String {
-    s.split('\n')
-        .map(|l| {
-            if l.len() <= LONG_LINE {
-                return l.to_string();
-            }
-            let end = (0..=LONG_LINE).rev().find(|&i| l.is_char_boundary(i)).unwrap_or(0);
-            format!("{}…", &l[..end])
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn finish(src: &str, compute: impl FnOnce(&str) -> Out) -> Done {
@@ -61,9 +35,10 @@ fn finish(src: &str, compute: impl FnOnce(&str) -> Out) -> Done {
         return Done { out, shown: None, input: None };
     }
     let mut out = compute(src);
-    let shown = has_long_line(&out.text).then(|| clip_long_lines(&out.text));
+    let shown = big::for_display(&out.text);
     if shown.is_some() {
-        out.status.push_str(" · Long lines shortened, copy for the full output");
+        out.status.push_str(" · ");
+        out.status.push_str(big::SHORTENED);
     }
     // Minified input: pretty-print it so the input pane stays responsive.
     let input = if has_long_line(src) {
@@ -84,6 +59,8 @@ struct Io {
     out: Out,
     finder: Finder,
     task: Option<Task<()>>,
+    /// Input and output languages, for when a document is small enough to highlight.
+    langs: (&'static str, &'static str),
 }
 
 impl Io {
@@ -96,7 +73,7 @@ impl Io {
         let input = code_editor(sample, "Paste or type JSON", in_lang, window, cx);
         let output = code_editor("", "", out_lang, window, cx);
         let (finder, find_sub) = Finder::new(&output, window, cx);
-        (Self { input, output, out: Out::default(), finder, task: None }, find_sub)
+        (Self { input, output, out: Out::default(), finder, task: None, langs: (in_lang, out_lang) }, find_sub)
     }
 
     /// Recompute the output from the input: right away for small inputs, in the
@@ -109,7 +86,7 @@ impl Io {
         compute: impl FnOnce(&str) -> Out + Send + 'static,
     ) {
         let text = self.input.read(cx).text().clone();
-        if text.len() <= LARGE_INPUT {
+        if text.len() <= big::LARGE {
             self.task = None;
             let done = finish(&text.to_string(), compute);
             self.apply(done, window, cx);
@@ -120,7 +97,7 @@ impl Io {
         cx.notify();
         // Replacing the task drops (cancels) the one still waiting.
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor().timer(DEBOUNCE).await;
+            cx.background_executor().timer(big::DEBOUNCE).await;
             let done = cx
                 .background_executor()
                 .spawn(async move { finish(&text.to_string(), compute) })
@@ -134,7 +111,12 @@ impl Io {
             set_text(&self.input, &input, window, cx);
         }
         self.out = done.out;
-        set_text(&self.output, done.shown.as_deref().unwrap_or(&self.out.text), window, cx);
+        let shown = done.shown.as_deref().unwrap_or(&self.out.text);
+        // Syntax trees for multi-megabyte documents cost seconds and hundreds of MB.
+        let in_len = self.input.read(cx).text().len();
+        big::fit_language(&self.input, self.langs.0, in_len, cx);
+        big::fit_language(&self.output, self.langs.1, shown.len(), cx);
+        set_text(&self.output, shown, window, cx);
         self.finder.refresh(cx);
         cx.notify();
     }
@@ -505,6 +487,7 @@ impl DataConvView {
         }
         self.reverse = reverse;
         let (a, b) = if reverse { (self.other.language(), "json") } else { ("json", self.other.language()) };
+        self.io.langs = (a, b);
         self.io.input.update(cx, |s, cx| s.set_highlighter(a, cx));
         self.io.output.update(cx, |s, cx| s.set_highlighter(b, cx));
         self.recompute(window, cx);
@@ -569,12 +552,12 @@ mod tests {
 
     #[test]
     fn minified_input_is_relaid_and_long_output_lines_are_shortened() {
-        let big = format!("[{}]", vec!["\"é\""; LONG_LINE].join(","));
+        let big = format!("[{}]", vec!["\"é\""; big::LONG_LINE].join(","));
         let done = finish(&big, identity);
         let input = done.input.expect("minified input is re-laid");
         assert!(!has_long_line(&input));
         let shown = done.shown.expect("the one-line output is shortened");
-        assert!(shown.len() <= LONG_LINE + '…'.len_utf8() && shown.ends_with('…'));
+        assert!(shown.len() <= big::LONG_LINE + '…'.len_utf8() && shown.ends_with('…'));
         assert_eq!(done.out.text.len(), big.len());
     }
 

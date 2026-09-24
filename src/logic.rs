@@ -880,6 +880,7 @@ pub enum LineSort {
     Shuffle,
 }
 
+#[derive(Clone, Copy)]
 pub struct LineOpts {
     pub sort: LineSort,
     pub dedupe: bool,

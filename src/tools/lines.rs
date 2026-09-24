@@ -2,11 +2,12 @@
 
 use gpui_kit::component::input::EditorState;
 use gpui_kit::{
-    Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Subscription,
+    Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Task,
     Window, div, prelude::FluentBuilder, px,
 };
 
 use super::*;
+use super::big;
 use crate::logic::{self, LineOpts, LineSort, plural, random_u32};
 use crate::ui::{self, Tone};
 
@@ -25,6 +26,7 @@ pub struct LinesView {
     seed: u32,
     out: SharedString,
     status: String,
+    task: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
 
@@ -48,6 +50,7 @@ impl LinesView {
             seed: random_u32(),
             out: SharedString::default(),
             status: String::new(),
+            task: None,
             _subs: subs,
         };
         this.recompute(window, cx);
@@ -64,18 +67,24 @@ impl LinesView {
             drop_empty: self.drop_empty,
             seed: self.seed,
         };
-        let r = logic::process_lines(&input, &opts);
-        let mut status = plural(r.lines, "line");
-        if r.dupes > 0 {
-            status.push_str(&format!(" · {} removed", plural(r.dupes, "duplicate")));
-        }
-        if r.empties > 0 {
-            status.push_str(&format!(" · {} removed", plural(r.empties, "empty line")));
-        }
-        self.status = status;
-        self.out = r.text.into();
-        set_text(&self.output, &self.out, window, cx);
-        cx.notify();
+        let size = input.len();
+        big::run(size, self, |t| &mut t.task, window, cx, move || logic::process_lines(&input, &opts), |this, r, window, cx| {
+            let mut status = plural(r.lines, "line");
+            if r.dupes > 0 {
+                status.push_str(&format!(" · {} removed", plural(r.dupes, "duplicate")));
+            }
+            if r.empties > 0 {
+                status.push_str(&format!(" · {} removed", plural(r.empties, "empty line")));
+            }
+            let shown = big::for_display(&r.text);
+            if shown.is_some() {
+                status.push_str(&format!(" · {}", big::SHORTENED));
+            }
+            set_text(&this.output, shown.as_deref().unwrap_or(&r.text), window, cx);
+            this.status = status;
+            this.out = r.text.into();
+            cx.notify();
+        });
     }
 
     fn toggle(&mut self, f: fn(&mut Self) -> &mut bool, window: &mut Window, cx: &mut Context<Self>) {

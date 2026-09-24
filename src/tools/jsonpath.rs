@@ -66,10 +66,15 @@ impl JsonPathView {
                 Err(e) => (String::new(), ("Error".into(), Some(Tone::Err)), Some(e)),
             }
         };
+        let mut status = status;
+        let shown = super::big::for_display(&out);
+        if shown.is_some() {
+            status.0 = format!("{} · {}", status.0, super::big::SHORTENED);
+        }
+        set_text(&self.output, shown.as_deref().unwrap_or(&out), window, cx);
         self.out = out.into();
         self.status = status;
         self.err = err;
-        set_text(&self.output, &self.out, window, cx);
         cx.notify();
     }
 }

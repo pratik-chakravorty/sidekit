@@ -5,12 +5,16 @@ use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::text::TextView;
 use gpui_kit::{
     Context, Entity, InteractiveElement, IntoElement, ParentElement, Render, SharedString, Styled,
-    Subscription, Window, div, px,
+    Subscription, Window, div, prelude::FluentBuilder, px,
 };
 
 use super::*;
 use crate::logic::plural;
 use crate::ui;
+
+/// The preview renders at most this much; laying out megabytes of rich text
+/// takes minutes and gigabytes.
+const PREVIEW_LIMIT: usize = 128 * 1024;
 
 const SAMPLE: &str = "# Release notes\n\nSideKit **0.2** adds a few tools:\n\n- A *Markdown* preview (this one)\n- A cron expression reader\n- JSON ↔ CSV\n\n> Everything runs offline.\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\n| Tool | Category |\n| --- | --- |\n| Cron | Testers |\n| QR code | Generators |\n\n[Read more](https://example.com)\n";
 
@@ -43,6 +47,13 @@ impl Render for MarkdownView {
             cx.notify();
         });
         let html_ish: SharedString = text.clone().into();
+        let cut = text.len() > PREVIEW_LIMIT;
+        let preview_text = if cut {
+            let end = text.floor_char_boundary(PREVIEW_LIMIT);
+            text[..text[..end].rfind('\n').unwrap_or(end)].to_string()
+        } else {
+            text.clone()
+        };
         let zoom = ui::PaneZoom::new("md-preview", window, cx);
 
         div()
@@ -69,7 +80,10 @@ impl Render for MarkdownView {
                             .overflow_y_scrollbar()
                             .px(px(20.))
                             .py(px(16.))
-                            .child(TextView::markdown(crate::id!("md-view-{}", self.rev), text).selectable(true)),
+                            .child(TextView::markdown(crate::id!("md-view-{}", self.rev), preview_text).selectable(true))
+                            .when(cut, |d| {
+                                d.child(div().mt(px(16.)).text_size(px(12.)).text_color(pal.text3).child("The preview shows the first 128 KB."))
+                            }),
                     ),
                 &pal,
                 window,

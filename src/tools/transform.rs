@@ -2,11 +2,12 @@
 
 use gpui_kit::component::input::EditorState;
 use gpui_kit::{
-    Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Window,
-    div, prelude::FluentBuilder, px,
+    Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Task,
+    Window, div, prelude::FluentBuilder, px,
 };
 
 use super::*;
+use super::big;
 use crate::logic::{self, plural};
 use crate::registry::ToolId;
 use crate::ui::{self, Tone};
@@ -82,6 +83,7 @@ pub struct TransformView {
     out: SharedString,
     status: String,
     err: Option<String>,
+    task: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
 
@@ -93,26 +95,41 @@ impl TransformView {
         // One-line SQL and minified XML are the usual input: wrap it.
         input.update(cx, |s, cx| s.set_soft_wrap(true, window, cx));
         let subs = vec![watch(&input, window, cx, Self::recompute), watch(&output, window, cx, |_, _, _| {})];
-        let mut this = Self { spec, input, output, mode: 0, out: SharedString::default(), status: String::new(), err: None, _subs: subs };
+        let mut this = Self { spec, input, output, mode: 0, out: SharedString::default(), status: String::new(), err: None, task: None, _subs: subs };
         this.recompute(window, cx);
         this
     }
 
     fn recompute(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let src = text_of(&self.input, cx);
-        let (out, status, err) = if src.trim().is_empty() {
-            (String::new(), "Waiting for input".to_string(), None)
-        } else {
-            match (self.spec.run)(&src, self.mode) {
+        big::fit_language(&self.input, self.spec.languages.0, src.len(), cx);
+        let (run, mode) = (self.spec.run, self.mode);
+        let work = move || {
+            if src.trim().is_empty() {
+                return (String::new(), "Waiting for input".to_string(), None);
+            }
+            match run(&src, mode) {
                 Ok((o, s)) => (o, s, None),
                 Err(e) => (String::new(), "Error".to_string(), Some(e)),
             }
         };
-        self.out = out.into();
-        self.status = status;
-        self.err = err;
-        set_text(&self.output, &self.out, window, cx);
-        cx.notify();
+        let size = text_len(&self.input, cx);
+        if size > big::LARGE {
+            self.status = "Working…".into();
+            cx.notify();
+        }
+        big::run(size, self, |t| &mut t.task, window, cx, work, |this, (out, mut status, err), window, cx| {
+            let shown = big::for_display(&out);
+            if shown.is_some() {
+                status = format!("{status} · {}", big::SHORTENED);
+            }
+            big::fit_language(&this.output, this.spec.languages.1, out.len(), cx);
+            set_text(&this.output, shown.as_deref().unwrap_or(&out), window, cx);
+            this.out = out.into();
+            this.status = status;
+            this.err = err;
+            cx.notify();
+        });
     }
 }
 
