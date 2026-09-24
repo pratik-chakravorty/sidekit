@@ -1,4 +1,4 @@
-//! Base64, URL, HTML and string-escape encoders share one view.
+//! Base64, hex, URL, HTML and string-escape encoders share one view.
 
 use gpui_kit::component::input::EditorState;
 use gpui_kit::{
@@ -41,6 +41,13 @@ fn spec(id: ToolId) -> Spec {
             sample: "<a href=\"/docs\">Read the \"docs\" & more</a>",
             enc: |s| Ok(logic::html_enc(s)),
             dec: |s| Ok(logic::html_dec(s)),
+        },
+        ToolId::Hex => Spec {
+            labels: ["Encode", "Decode"],
+            hint: "Text ↔ hexadecimal bytes using UTF-8",
+            sample: "Hello, SideKit! 👋",
+            enc: |s| Ok(logic::hex_enc(s)),
+            dec: logic::hex_dec,
         },
         _ => Spec {
             labels: ["Escape", "Unescape"],
@@ -107,6 +114,11 @@ impl CodecView {
         self.recompute(window, cx);
     }
 
+    pub fn set_decode(&mut self, decode: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.decode = decode;
+        self.recompute(window, cx);
+    }
+
     /// "Use output as input": feed the result back and flip direction.
     fn swap(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.err.is_some() {
@@ -130,10 +142,7 @@ impl Render for CodecView {
             format!("{} · {}", plural(self.out.encode_utf16().count(), "character"), plural(self.out.len(), "byte"))
         };
         let tone = if self.err.is_some() { Some(Tone::Err) } else if !self.out.is_empty() { Some(Tone::Ok) } else { None };
-        let on_mode = on_index(cx, |this: &mut Self, i, w, cx| {
-            this.decode = i == 1;
-            this.recompute(w, cx);
-        });
+        let on_mode = on_index(cx, |this: &mut Self, i, w, cx| this.set_decode(i == 1, w, cx));
         let [paste, clear] = paste_clear("codec", &self.input, &pal, cx, Self::recompute);
         let zoom = ui::PaneZoom::new("codec-output", window, cx);
 

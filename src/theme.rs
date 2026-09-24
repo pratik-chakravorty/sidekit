@@ -177,6 +177,11 @@ impl Pal {
 }
 
 /// Switch light/dark and push the palette into gpui-component's theme.
+/// Whether the operating system is currently in dark mode.
+pub fn system_dark(cx: &App) -> bool {
+    matches!(cx.window_appearance(), gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark)
+}
+
 pub fn apply(dark: bool, window: Option<&mut Window>, cx: &mut App) {
     let pal = if dark { Pal::dark() } else { Pal::light() };
     cx.set_global(pal);

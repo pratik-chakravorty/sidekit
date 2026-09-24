@@ -1,5 +1,8 @@
 //! The Ctrl+K command palette: fuzzy search over every tool and a few commands.
+//! Queries that name a mode ("base64 decode", "unix to date") also offer the tool
+//! already switched to it.
 
+use std::ops::Range;
 use std::time::Duration;
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -13,7 +16,8 @@ use gpui_kit::{
 
 use crate::app::kbd_el;
 use crate::icons::icon;
-use crate::registry::{TOOLS, ToolId, cat, tool};
+use crate::library_view::{LibAction, PaletteCommand, PaletteItem};
+use crate::registry::{Mode, TOOLS, VARIANTS, ToolId, Variant, cat, tool};
 use crate::settings::Settings;
 use crate::theme::Pal;
 use crate::ui;
@@ -34,7 +38,13 @@ pub fn bind_keys(cx: &mut App) {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PaletteAction {
     Open(ToolId),
+    OpenMode(ToolId, Mode),
     Home,
+    Library,
+    /// A library item, by id.
+    LibraryItem(u64),
+    /// An AI library command: new, import, install, copy …
+    Lib(LibAction),
     Settings,
     ToggleTheme,
     ToggleFavorite(ToolId),
@@ -55,6 +65,10 @@ struct Entry {
     hint: SharedString,
     keywords: String,
     fav: bool,
+    /// Set for a tool-in-a-mode entry, which only shows when the query asks for the mode.
+    variant: Option<&'static Variant>,
+    /// Ranked first: actions on the library item on show.
+    boost: bool,
 }
 
 pub struct Palette {
@@ -108,9 +122,47 @@ pub fn fuzzy(query: &str, text: &str) -> Option<i32> {
     Some(score)
 }
 
+/// A query's words: lowercase runs of letters and digits.
+fn words(query: &str) -> Vec<&str> {
+    query.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect()
+}
+
+/// Where the words of `cue` appear in a row in `words`. The last one may still be
+/// being typed ("base64 dec"), or carry a suffix ("decoder").
+fn find_cue(words: &[&str], cue: &str) -> Option<Range<usize>> {
+    let cue: Vec<&str> = cue.split(' ').collect();
+    let last = cue.len() - 1;
+    (0..=words.len().checked_sub(cue.len())?)
+        .find(|&i| {
+            cue.iter().enumerate().all(|(j, c)| {
+                let w = words[i + j];
+                w == *c || (j == last && w.len() >= 3 && (c.starts_with(w) || w.starts_with(c)))
+            })
+        })
+        .map(|i| i..i + cue.len())
+}
+
+/// Score for a tool-in-a-mode entry: the query must name the mode, and every
+/// other word must fit the tool well.
+fn variant_score(words: &[&str], v: &Variant, keywords: &str) -> Option<i32> {
+    let cue = v.cues.iter().find_map(|c| find_cue(words, c))?;
+    let mut score = 0;
+    for (_, w) in words.iter().enumerate().filter(|(i, _)| !cue.contains(i)) {
+        score += fuzzy(w, keywords).filter(|&s| s >= w.len() as i32)?;
+    }
+    // Asking for a mode is the most specific thing a query can do.
+    Some(1000 + score)
+}
+
 impl Palette {
-    pub fn new(current: Option<ToolId>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search tools and commands…"));
+    pub fn new(
+        current: Option<ToolId>,
+        library: Vec<PaletteItem>,
+        lib_cmds: Vec<PaletteCommand>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search tools, commands and your AI library…"));
         let _sub = cx.subscribe_in(&input, window, |this, _, ev: &InputEvent, _, cx| {
             if let InputEvent::Change = ev {
                 this.filter(cx);
@@ -129,8 +181,47 @@ impl Palette {
                 hint: cat(t.cat).label.into(),
                 keywords: format!("{} {} {} {}", t.title, t.keywords, cat(t.cat).label, t.key),
                 fav: settings.is_fav(t.key),
+                variant: None,
+                boost: false,
             })
             .collect();
+        entries.extend(VARIANTS.iter().map(|v| {
+            let t = tool(v.tool);
+            Entry {
+                action: PaletteAction::OpenMode(v.tool, v.mode),
+                title: format!("{} · {}", t.name, v.label).into(),
+                subtitle: t.desc.into(),
+                icon: t.icon,
+                hint: cat(t.cat).label.into(),
+                keywords: format!("{} {} {}", t.title, t.keywords, t.key),
+                fav: settings.is_fav(t.key),
+                variant: Some(v),
+                boost: false,
+            }
+        }));
+        entries.extend(library.into_iter().map(|i| Entry {
+            action: PaletteAction::LibraryItem(i.id),
+            // Names like "code-review" should match a query typed with spaces.
+            keywords: format!("{} {} {} {} library", i.title.replace(['-', '_'], " "), i.tags.join(" "), i.kind.label(), i.kind.plural()),
+            title: i.title.into(),
+            subtitle: i.summary.into(),
+            icon: i.kind.icon(),
+            hint: format!("Library · {}", i.kind.label()).into(),
+            fav: false,
+            variant: None,
+            boost: false,
+        }));
+        entries.extend(lib_cmds.into_iter().map(|c| Entry {
+            action: PaletteAction::Lib(c.action),
+            title: c.title.into(),
+            subtitle: c.subtitle.into(),
+            icon: c.icon,
+            hint: if c.contextual { "This item".into() } else { "Library".into() },
+            keywords: c.keywords,
+            fav: false,
+            variant: None,
+            boost: c.contextual,
+        }));
         let dark = settings.dark;
         let wrap = settings.wrap;
         let mut cmd = |action, title: &str, subtitle: &str, icon, keywords: &str| {
@@ -142,9 +233,12 @@ impl Palette {
                 hint: "Command".into(),
                 keywords: keywords.into(),
                 fav: false,
+                variant: None,
+                boost: false,
             })
         };
         cmd(PaletteAction::Home, "All tools", "Browse every tool", "grid", "home browse");
+        cmd(PaletteAction::Library, "AI Library", "Skills, prompts, agents and project rules", "library", "ai skills prompts agents rules claude codex cursor");
         cmd(PaletteAction::Settings, "Settings", "Theme, editor and behavior preferences", "gear", "preferences options config");
         cmd(
             PaletteAction::ToggleTheme,
@@ -181,24 +275,31 @@ impl Palette {
         let q = self.input.read(cx).value().trim().to_lowercase();
         if q.is_empty() {
             // Favorites first, then the rest of the tools, then commands.
-            let mut idx: Vec<usize> = (0..self.entries.len()).collect();
+            // Library items only show once something is typed.
+            let mut idx: Vec<usize> = (0..self.entries.len())
+                .filter(|&i| self.entries[i].variant.is_none() && !matches!(self.entries[i].action, PaletteAction::LibraryItem(_)))
+                .collect();
             idx.sort_by_key(|&i| {
                 let e = &self.entries[i];
                 let is_tool = matches!(e.action, PaletteAction::Open(_));
-                (!e.fav, !is_tool, i)
+                (!e.boost, !e.fav, !is_tool, i)
             });
             self.results = idx;
         } else {
+            let words = words(&q);
             let mut scored: Vec<(i32, usize)> = self
                 .entries
                 .iter()
                 .enumerate()
                 .filter_map(|(i, e)| {
+                    if let Some(v) = e.variant {
+                        return variant_score(&words, v, &e.keywords).map(|s| (s + if e.fav { 3 } else { 0 }, i));
+                    }
                     let title = fuzzy(&q, &e.title).map(|s| s * 2 + 10);
                     let kw = fuzzy(&q, &e.keywords);
                     let desc = if q.len() >= 3 && e.subtitle.to_lowercase().contains(&q) { Some(4) } else { None };
                     let best = [title, kw, desc].into_iter().flatten().max()?;
-                    Some((best + if e.fav { 3 } else { 0 }, i))
+                    Some((best + if e.fav { 3 } else { 0 } + if e.boost { 6 } else { 0 }, i))
                 })
                 .collect();
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
@@ -435,7 +536,47 @@ impl Render for Palette {
 
 #[cfg(test)]
 mod tests {
-    use super::fuzzy;
+    use super::{find_cue, fuzzy, variant_score, words};
+    use crate::registry::{Mode, ToolId, VARIANTS, tool};
+
+    /// The tool-in-a-mode entries a query offers, best first.
+    fn modes(query: &str) -> Vec<(ToolId, Mode)> {
+        let q = query.to_lowercase();
+        let w = words(&q);
+        let mut hits: Vec<_> = VARIANTS
+            .iter()
+            .filter_map(|v| {
+                let t = tool(v.tool);
+                let kw = format!("{} {} {}", t.title, t.keywords, t.key);
+                variant_score(&w, v, &kw).map(|s| (s, (v.tool, v.mode)))
+            })
+            .collect();
+        hits.sort_by(|a, b| b.0.cmp(&a.0));
+        hits.into_iter().map(|(_, m)| m).collect()
+    }
+
+    #[test]
+    fn a_query_naming_a_mode_offers_the_tool_in_that_mode() {
+        assert_eq!(modes("base64 decode"), [(ToolId::Base64, Mode::Decode)]);
+        assert_eq!(modes("Decode base64"), [(ToolId::Base64, Mode::Decode)]);
+        assert_eq!(modes("b64 enc"), [(ToolId::Base64, Mode::Encode)]);
+        assert_eq!(modes("url decoder"), [(ToolId::Url, Mode::Decode)]);
+        assert_eq!(modes("unix to date"), [(ToolId::Date, Mode::ToDate)]);
+        assert_eq!(modes("date to timestamp"), [(ToolId::Date, Mode::ToUnix)]);
+        assert_eq!(modes("minify json"), [(ToolId::JsonFmt, Mode::Minify)]);
+        assert_eq!(modes("unescape"), [(ToolId::Html, Mode::Decode), (ToolId::Escape, Mode::Decode)]);
+        assert_eq!(modes("decode").len(), 5);
+    }
+
+    #[test]
+    fn no_mode_without_asking_for_one() {
+        assert!(modes("base64").is_empty());
+        assert!(modes("base64 d").is_empty());
+        assert!(modes("jwt decode").is_empty());
+        assert!(modes("date").is_empty());
+        assert_eq!(find_cue(&["unix", "to", "da"], "to date"), None);
+        assert_eq!(find_cue(&["unix", "to", "dat"], "to date"), Some(1..3));
+    }
 
     #[test]
     fn fuzzy_prefers_word_starts() {

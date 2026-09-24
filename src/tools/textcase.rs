@@ -1,7 +1,6 @@
 use gpui_kit::component::input::TextareaState;
 use gpui_kit::{
-    Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, Styled, Subscription,
-    Window, div, px,
+    Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription, Window, div, px,
 };
 
 use super::*;
@@ -25,26 +24,9 @@ impl TextCaseView {
 impl Render for TextCaseView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = Pal::get(cx);
-        let p = pal;
         let t = text_of(&self.input, cx);
         let [paste, clear] = paste_clear("tc", &self.input, &pal, cx, |_: &mut Self, _, cx| cx.notify());
-        let stats = text_stats(&t).map(|(v, l)| {
-            div()
-                .id(l)
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .px(px(16.))
-                .py(px(12.))
-                .min_w_0()
-                .rounded(px(8.))
-                .bg(p.card)
-                .border_1()
-                .border_color(p.stroke)
-                .hover(move |s| s.border_color(p.accent))
-                .child(div().text_size(px(22.)).font_weight(FontWeight::SEMIBOLD).child(v))
-                .child(div().text_size(px(12.)).text_color(p.text3).child(l))
-        });
+        let stats = text_stats(&t).map(|(v, l)| ui::stat_tile(v, l, &pal));
         let rows = case_rows(&t);
         let n = rows.len();
         let mut card = ui::kv_card(&pal);

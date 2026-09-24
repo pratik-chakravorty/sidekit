@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Settings {
     pub dark: bool,
+    /// Follow the operating system's light / dark setting; `dark` then
+    /// mirrors it.
+    pub follow_system: bool,
     pub favorites: Vec<String>,
     pub wrap: bool,
     pub smart: bool,
@@ -19,6 +22,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             dark: false,
+            follow_system: false,
             favorites: ["jsonfmt", "base64", "jwt", "regex"].map(String::from).to_vec(),
             wrap: false,
             smart: true,
@@ -29,7 +33,7 @@ impl Default for Settings {
 
 impl Global for Settings {}
 
-fn config_dir() -> Option<PathBuf> {
+pub fn config_dir() -> Option<PathBuf> {
     std::env::var_os("APPDATA")
         .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
         .map(PathBuf::from)

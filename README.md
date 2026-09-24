@@ -1,7 +1,7 @@
 # SideKit
 
 A fast, native developer toolbox built in Rust on [GPUI](https://gpui.rs/) and
-[GPUI Kit](https://gpui-kit.com) (gpui-component). Sixteen everyday tools —
+[GPUI Kit](https://gpui-kit.com) (gpui-component). Thirty-seven everyday tools —
 formatters, encoders, generators, converters and testers — in one window that
 opens in about a quarter of a second and runs entirely offline.
 
@@ -109,27 +109,72 @@ by `packaging/make-icons.ps1`.
 
 | Keys              | Action                               |
 | ----------------- | ------------------------------------ |
-| `Ctrl K` / `⌘ K`  | Command palette (tools and commands) |
+| `Ctrl K` / `⌘ K`  | Command palette (tools, commands and the AI library) |
 | `Ctrl F`          | Command palette (find text in JSON output when focused) |
-| `Alt ←`           | Back                                 |
-| `Ctrl Shift T`    | Toggle light / dark                  |
+| `Alt ←`           | Back (also steps back through library items) |
+| `Esc`             | Leave edit mode in the AI library    |
+| `Ctrl Shift T`    | Toggle light / dark (Settings also has a System option that follows the OS) |
 | `Ctrl ,`          | Settings                             |
 
 In the palette: `↑` / `↓` to move, `Enter` to open, `Esc` to close.
+
+## AI Library
+
+Keep the skills, prompts, agents and project rules you use with Claude Code,
+Codex, Cursor and GitHub Copilot in one searchable place, then put them back
+where each tool expects them.
+
+- **Import** by dropping files or folders on the library, picking a folder, or
+  scanning the usual places (`~/.claude/skills`, `~/.claude/agents`,
+  `~/.claude/commands`, `~/.codex/prompts`, `~/.cursor/rules`, `~/.copilot/skills`,
+  …). SideKit recognizes `SKILL.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`,
+  Cursor `.mdc` files, Copilot's `copilot-instructions.md`, `*.agent.md`,
+  `*.prompt.md` and `*.instructions.md` files, and Markdown under `skills`,
+  `agents`, `prompts`, `commands` and `rules` folders. It reads `name`,
+  `description`, `tags` and `type` from frontmatter.
+- **Duplicates** are matched by content, so the same skill copied into five
+  repositories is stored once.
+- **Browse** a list grouped into Pinned, Skills, Prompts, Agents and Rules.
+  The search box matches names, descriptions and text, and also takes `#tag`
+  and kind words (`skill`, `prompts`, …). Pin items to keep them at the top.
+- **Edit** in place: each item shows as rendered Markdown; Edit opens the raw
+  file, frontmatter included, and changes save as you type.
+- **Credentials**: lines that look like keys, tokens or private keys are
+  flagged with their line numbers.
+- **Install** an item into Claude Code (user or project skills, subagents and
+  slash commands, or `CLAUDE.md`), Codex (skills, prompts, global `AGENTS.md`),
+  Cursor (`.cursor/rules/*.mdc`, commands), GitHub Copilot (skills and custom
+  agents in `~/.copilot` or `.github`, `.github/prompts/*.prompt.md`,
+  `.github/copilot-instructions.md`) or a project's `AGENTS.md`. Files are
+  never overwritten without asking.
+
+  Installing writes a copy: editing the item in the library later does not
+  change copies already installed. Install to the same place again and choose
+  **Replace** to update one.
+- **Prompt placeholders** such as `{{topic}}` or `$ARGUMENTS` get input fields;
+  Copy puts the filled-in prompt on the clipboard.
+- **Command palette**: items, and every library action (new, import, scan,
+  copy, install, pin, edit, move, delete), are in `Ctrl K`. Actions for the
+  item on show are listed first while the library is open.
+
+Everything is plain Markdown under `%APPDATA%\SideKit\library` (Windows) or
+`~/.config/SideKit/library`, one folder per kind, so it can be backed up or
+kept in git. Set `SIDEKIT_LIBRARY` to use another folder.
 
 ## Tools
 
 | Category            | Tools                                              |
 | ------------------- | -------------------------------------------------- |
-| Converters          | JSON → YAML, Number base, Date ⇄ Unix timestamp (both directions, most date formats) |
-| Encoders / Decoders | Base64 text, URL, HTML entities, JWT decoder       |
-| Formatters          | JSON (indent, minify, sort, validate, find in output) |
-| Generators          | Hash (MD5, SHA-1/256/384/512), UUID v4, Password, Lorem ipsum |
+| Converters          | JSON ⇄ YAML, JSON ⇄ TOML, JSON ⇄ CSV, Number base, Date ⇄ Unix timestamp (both directions, most date formats) |
+| Encoders / Decoders | Base64 text, Base64 image (data URIs), Hex ⇄ text, URL, URL parser, HTML entities, X.509 certificate decoder, JWT decoder |
+| Formatters          | JSON (indent, minify, sort, validate, find in output), SQL, XML (with well-formedness check) |
+| Generators          | Hash (MD5, SHA-1/224/256/384/512, CRC-32, HMAC), UUID v4 / v7 and ULID, Password, QR code, Mock data (JSON or CSV), Lorem ipsum |
 | Graphic             | Color converter with WCAG contrast and shades      |
-| Testers             | Regular expression tester with match details       |
-| Text                | Text analyzer & case converter, Escape / unescape  |
+| Network             | IPv4 / IPv6 subnet calculator and address converter, IP range expander & summarizer, MAC address generator, IPv6 ULA generator |
+| Testers             | Regular expression tester, Cron expression parser (plain English + next runs), JSONPath playground, Structured data diff (JSON / YAML) |
+| Text                | Text analyzer & case converter, Escape / unescape, Text diff, Markdown preview, Line sort & dedupe, Unicode inspector |
 
-JSON input and output, YAML output, decoded JWT headers and payloads, and HTML
+JSON, YAML, TOML, SQL, XML and Markdown panes, decoded JWT headers and payloads, and HTML
 panes include syntax highlighting that follows the light or dark theme. Text
 selection, copying, wrapping, and find-in-output remain available.
 
@@ -175,6 +220,9 @@ The title bar is drawn by the app on every platform:
 | `src/ui.rs`       | Design components (settings rows, toggles, panes, …)    |
 | `src/theme.rs`    | Design tokens and the bridge to gpui-component's theme  |
 | `src/logic.rs`    | Pure conversion logic and clipboard detection, tested   |
+| `src/logic/`      | Larger pure modules (CSV, cron, diff, XML, certificates, IP ranges, images / QR, mock data), tested |
+| `src/library.rs`  | AI library storage, import, credential scan, install targets, tested |
+| `src/library_view.rs` | AI library page                                     |
 | `src/tools/`      | One view per tool, created lazily on first open         |
 
 Run the tests with `cargo test`.

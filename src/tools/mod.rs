@@ -1,17 +1,30 @@
 //! One view per tool. Views are created lazily the first time a tool opens,
 //! which keeps start-up work to the chrome and the home grid.
 
+mod cert;
 mod codec;
 mod color;
+mod cron;
 mod date;
+mod diff;
+mod image;
+mod jsonpath;
+mod markdown;
+mod mock;
+mod transform;
 mod hash;
 mod json;
 mod jwt;
+mod lines;
 mod lorem;
+mod netgen;
 mod numbase;
 mod password;
 mod regex;
+mod subnet;
 mod textcase;
+mod unicode;
+mod urlparse;
 mod uuid;
 
 #[cfg(test)]
@@ -24,7 +37,7 @@ use gpui_kit::{
     Subscription, Window, div, prelude::FluentBuilder, px, relative,
 };
 
-use crate::registry::ToolId;
+use crate::registry::{Mode, ToolId};
 use crate::settings::Settings;
 use crate::theme::{MONO_FONT, Pal};
 use crate::ui;
@@ -33,10 +46,20 @@ use crate::ui;
 pub fn create(id: ToolId, window: &mut Window, cx: &mut App) -> AnyView {
     match id {
         ToolId::JsonFmt => cx.new(|cx| json::JsonFmtView::new(window, cx)).into(),
-        ToolId::JsonYaml => cx.new(|cx| json::JsonYamlView::new(window, cx)).into(),
+        ToolId::JsonYaml | ToolId::JsonToml | ToolId::JsonCsv => cx.new(|cx| json::DataConvView::new(id, window, cx)).into(),
+        ToolId::Sql | ToolId::Xml | ToolId::IpRange => cx.new(|cx| transform::TransformView::new(id, window, cx)).into(),
+        ToolId::Cron => cx.new(|cx| cron::CronView::new(window, cx)).into(),
+        ToolId::JsonPath => cx.new(|cx| jsonpath::JsonPathView::new(window, cx)).into(),
+        ToolId::TextDiff => cx.new(|cx| diff::TextDiffView::new(window, cx)).into(),
+        ToolId::DataDiff => cx.new(|cx| diff::DataDiffView::new(window, cx)).into(),
+        ToolId::Markdown => cx.new(|cx| markdown::MarkdownView::new(window, cx)).into(),
+        ToolId::B64Image => cx.new(|cx| image::B64ImageView::new(window, cx)).into(),
+        ToolId::Qr => cx.new(|cx| image::QrView::new(window, cx)).into(),
+        ToolId::Cert => cx.new(|cx| cert::CertView::new(window, cx)).into(),
+        ToolId::Mock => cx.new(|cx| mock::MockView::new(window, cx)).into(),
         ToolId::NumBase => cx.new(|cx| numbase::NumBaseView::new(window, cx)).into(),
         ToolId::Date => cx.new(|cx| date::DateView::new(window, cx)).into(),
-        ToolId::Base64 | ToolId::Url | ToolId::Html | ToolId::Escape => {
+        ToolId::Base64 | ToolId::Hex | ToolId::Url | ToolId::Html | ToolId::Escape => {
             cx.new(|cx| codec::CodecView::new(id, window, cx)).into()
         }
         ToolId::Jwt => cx.new(|cx| jwt::JwtView::new(window, cx)).into(),
@@ -47,6 +70,12 @@ pub fn create(id: ToolId, window: &mut Window, cx: &mut App) -> AnyView {
         ToolId::Color => cx.new(|cx| color::ColorView::new(window, cx)).into(),
         ToolId::Regex => cx.new(|cx| regex::RegexView::new(window, cx)).into(),
         ToolId::TextCase => cx.new(|cx| textcase::TextCaseView::new(window, cx)).into(),
+        ToolId::UrlParse => cx.new(|cx| urlparse::UrlParseView::new(window, cx)).into(),
+        ToolId::Lines => cx.new(|cx| lines::LinesView::new(window, cx)).into(),
+        ToolId::Unicode => cx.new(|cx| unicode::UnicodeView::new(window, cx)).into(),
+        ToolId::Subnet => cx.new(|cx| subnet::SubnetView::new(window, cx)).into(),
+        ToolId::Mac => cx.new(|cx| netgen::MacView::new(window, cx)).into(),
+        ToolId::Ula => cx.new(|cx| netgen::UlaView::new(window, cx)).into(),
     }
 }
 
@@ -80,7 +109,46 @@ pub fn fill(id: ToolId, view: &AnyView, text: &str, window: &mut Window, cx: &mu
                 e.update(cx, |t, cx| t.set_input(text, true, window, cx));
             }
         }
+        ToolId::Cert => {
+            if let Ok(e) = v.downcast::<cert::CertView>() {
+                e.update(cx, |t, cx| t.set_input(text, window, cx));
+            }
+        }
+        ToolId::B64Image => {
+            if let Ok(e) = v.downcast::<image::B64ImageView>() {
+                e.update(cx, |t, cx| t.set_input(text, window, cx));
+            }
+        }
+        ToolId::UrlParse => {
+            if let Ok(e) = v.downcast::<urlparse::UrlParseView>() {
+                e.update(cx, |t, cx| t.set_input(text, window, cx));
+            }
+        }
+        ToolId::Subnet => {
+            if let Ok(e) = v.downcast::<subnet::SubnetView>() {
+                e.update(cx, |t, cx| t.set_input(text, window, cx));
+            }
+        }
         _ => {}
+    }
+}
+
+/// Switch an open tool to `mode` (picked from the command palette).
+pub fn set_mode(view: &AnyView, mode: Mode, window: &mut Window, cx: &mut App) {
+    let v = view.clone();
+    if let Ok(e) = v.clone().downcast::<codec::CodecView>() {
+        if let Mode::Encode | Mode::Decode = mode {
+            e.update(cx, |t, cx| t.set_decode(mode == Mode::Decode, window, cx));
+        }
+    } else if let Ok(e) = v.clone().downcast::<date::DateView>() {
+        if let Mode::ToDate | Mode::ToUnix = mode {
+            e.update(cx, |t, cx| t.set_mode(mode == Mode::ToUnix, window, cx));
+        }
+    } else if let Ok(e) = v.downcast::<json::JsonFmtView>() {
+        if mode == Mode::Minify {
+            let minified = json::INDENTS.iter().position(|i| *i == "Minified").unwrap_or(0);
+            e.update(cx, |t, cx| t.set_indent(minified, window, cx));
+        }
     }
 }
 

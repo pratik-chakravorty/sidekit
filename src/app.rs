@@ -16,6 +16,7 @@ use gpui_kit::{
 
 use crate::icons::icon;
 use crate::id;
+use crate::library_view::{LibraryEvent, LibraryView};
 use crate::palette::{Palette, PaletteAction, PaletteEvent};
 use crate::registry::{CATS, Cat, TOOLS, Tool, ToolId, cat, tool};
 use crate::settings::Settings;
@@ -49,6 +50,7 @@ enum Cap {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum View {
     Home,
+    Library,
     Settings,
     Tool(ToolId),
 }
@@ -59,14 +61,18 @@ struct Suggestion {
     text: String,
 }
 
+/// A place to come back to: a page, and for the library, the item on show.
+type Stop = (View, Option<u64>);
+
 pub struct SideKit {
     view: View,
-    history: Vec<View>,
+    history: Vec<Stop>,
     home_cat: Option<Cat>,
     /// Explicit open/closed choices for nav groups, keyed by group.
     open_groups: HashMap<&'static str, bool>,
     group_gen: HashMap<&'static str, usize>,
     tool_views: HashMap<ToolId, AnyView>,
+    library: Entity<LibraryView>,
     hovered_card: Option<ToolId>,
     palette: Option<Entity<Palette>>,
     focus: FocusHandle,
@@ -88,6 +94,25 @@ impl SideKit {
                 this.check_clipboard(cx);
             }
         });
+        // "System" theme: follow the OS when it switches between light and dark.
+        let appearance = cx.observe_window_appearance(window, |this, window, cx| {
+            if Settings::get(cx).follow_system {
+                let dark = theme::system_dark(cx);
+                if dark != Settings::get(cx).dark {
+                    this.apply_theme(dark, window, cx);
+                }
+            }
+        });
+        let library = cx.new(|cx| LibraryView::new(window, cx));
+        // Moving between library items is navigation too, so Back can retrace it.
+        let lib_nav = cx.subscribe(&library, |this, _, ev: &LibraryEvent, cx| match ev {
+            LibraryEvent::Moved { from } => {
+                if this.view == View::Library {
+                    this.push_history((View::Library, Some(*from)));
+                    cx.notify();
+                }
+            }
+        });
         let mut this = Self {
             view: View::Home,
             history: Vec::new(),
@@ -95,13 +120,14 @@ impl SideKit {
             open_groups: HashMap::new(),
             group_gen: HashMap::new(),
             tool_views: HashMap::new(),
+            library,
             hovered_card: None,
             palette: None,
             suggestion: None,
             seen_clipboard: None,
             focus,
             epoch: 0,
-            _subs: vec![activation],
+            _subs: vec![activation, lib_nav, appearance],
         };
         this.check_clipboard(cx);
         this
@@ -151,21 +177,39 @@ impl SideKit {
         if let View::Tool(id) = v {
             self.ensure_tool(id, window, cx);
         }
-        self.history.push(self.view);
-        if self.history.len() > 30 {
-            self.history.remove(0);
-        }
+        let stop = (self.view, if self.view == View::Library { self.library.read(cx).selected() } else { None });
+        self.push_history(stop);
         self.view = v;
         self.epoch += 1;
         self.hovered_card = None;
         cx.notify();
     }
 
-    fn back(&mut self, cx: &mut Context<Self>) {
-        if let Some(v) = self.history.pop() {
-            self.view = v;
-            self.epoch += 1;
+    fn push_history(&mut self, stop: Stop) {
+        if self.history.last() != Some(&stop) {
+            self.history.push(stop);
+        }
+        if self.history.len() > 50 {
+            self.history.remove(0);
+        }
+    }
+
+    fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        while let Some((view, item)) = self.history.pop() {
+            // Items deleted since are skipped, and so are stops that would change nothing.
+            if let Some(id) = item {
+                if !self.library.update(cx, |v, cx| v.restore(id, window, cx)) {
+                    continue;
+                }
+            } else if view == self.view {
+                continue;
+            }
+            if view != self.view {
+                self.view = view;
+                self.epoch += 1;
+            }
             cx.notify();
+            return;
         }
     }
 
@@ -176,12 +220,21 @@ impl SideKit {
         }
     }
 
+    /// The title-bar switch: an explicit choice, so it stops following the system.
     fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let dark = !Settings::get(cx).dark;
-        self.set_theme(dark, window, cx);
+        self.set_theme_mode(if dark { 1 } else { 0 }, window, cx);
     }
 
-    fn set_theme(&mut self, dark: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// 0 = light, 1 = dark, 2 = follow the system.
+    fn set_theme_mode(&mut self, mode: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let follow = mode == 2;
+        let dark = if follow { theme::system_dark(cx) } else { mode == 1 };
+        Settings::update(cx, |s| s.follow_system = follow);
+        self.apply_theme(dark, window, cx);
+    }
+
+    fn apply_theme(&mut self, dark: bool, window: &mut Window, cx: &mut Context<Self>) {
         Settings::update(cx, |s| s.dark = dark);
         theme::apply(dark, Some(window), cx);
         cx.notify();
@@ -214,7 +267,9 @@ impl SideKit {
             View::Tool(id) => Some(id),
             _ => None,
         };
-        let palette = cx.new(|cx| Palette::new(current, window, cx));
+        let lib = self.library.read(cx);
+        let (library, lib_cmds) = (lib.palette_items(), lib.palette_commands(self.view == View::Library));
+        let palette = cx.new(|cx| Palette::new(current, library, lib_cmds, window, cx));
         let sub = cx.subscribe_in(&palette, window, |this, _, ev: &PaletteEvent, window, cx| {
             this.palette = None;
             window.focus(&this.focus, cx);
@@ -231,11 +286,26 @@ impl SideKit {
     fn run(&mut self, action: PaletteAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             PaletteAction::Open(id) => self.go(View::Tool(id), window, cx),
+            PaletteAction::OpenMode(id, mode) => {
+                self.go(View::Tool(id), window, cx);
+                if let Some(view) = self.tool_views.get(&id) {
+                    tools::set_mode(view, mode, window, cx);
+                }
+            }
             PaletteAction::Home => self.go(View::Home, window, cx),
+            PaletteAction::Library => self.go(View::Library, window, cx),
+            PaletteAction::LibraryItem(id) => {
+                self.go(View::Library, window, cx);
+                self.library.update(cx, |v, cx| v.open_item(id, window, cx));
+            }
+            PaletteAction::Lib(action) => {
+                self.go(View::Library, window, cx);
+                self.library.update(cx, |v, cx| v.run(action, window, cx));
+            }
             PaletteAction::Settings => self.go(View::Settings, window, cx),
             PaletteAction::ToggleTheme => self.toggle_theme(window, cx),
             PaletteAction::ToggleFavorite(id) => self.toggle_fav(tool(id).key, cx),
-            PaletteAction::Back => self.back(cx),
+            PaletteAction::Back => self.back(window, cx),
             PaletteAction::ToggleWrap => {
                 Settings::update(cx, |s| s.wrap = !s.wrap);
                 cx.notify();
@@ -387,7 +457,7 @@ impl SideKit {
                     .when(!no_back, |d| {
                         d.cursor_pointer()
                             .hover(move |s| s.bg(p.subtle))
-                            .on_click(cx.listener(|this, _, _, cx| this.back(cx)))
+                            .on_click(cx.listener(|this, _, window, cx| this.back(window, cx)))
                     })
                     .child(icon("back", 16., p.text2)),
             )
@@ -557,6 +627,21 @@ impl SideKit {
                             .child(TOOLS.len().to_string()),
                     )
                     .on_click(cx.listener(|this, _, window, cx| this.go(View::Home, window, cx))),
+            )
+            .child(
+                self.nav_item("nav-library", "library", "AI Library", self.view == View::Library, false, &pal)
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(pal.text3)
+                            .px(px(7.))
+                            .py(px(1.))
+                            .rounded(px(10.))
+                            .bg(pal.subtle)
+                            .font_weight(FontWeight::NORMAL)
+                            .child(self.library.read(cx).count().to_string()),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| this.go(View::Library, window, cx))),
             );
 
         for g in groups {
@@ -924,8 +1009,8 @@ impl SideKit {
                                 ui::setting_icon("contrast", &pal),
                                 "App theme",
                                 Some("Select which app theme to display".into()),
-                                ui::seg("s-theme-seg", &["Light", "Dark"], s.dark as usize, &pal, tools::on_index(cx, |this, i, w, cx| {
-                                    this.set_theme(i == 1, w, cx)
+                                ui::seg("s-theme-seg", &["Light", "Dark", "System"], if s.follow_system { 2 } else { s.dark as usize }, &pal, tools::on_index(cx, |this, i, w, cx| {
+                                    this.set_theme_mode(i, w, cx)
                                 })),
                                 &pal,
                             ))
@@ -1144,6 +1229,7 @@ impl Render for SideKit {
         let view = self.view;
         let content: AnyElement = match view {
             View::Home => self.render_home(window, cx),
+            View::Library => div().flex_1().min_h_0().flex().flex_col().child(self.library.clone()).into_any_element(),
             View::Settings => self.render_settings(window, cx),
             View::Tool(id) => self.render_tool(id, window, cx),
         };
@@ -1154,10 +1240,10 @@ impl Render for SideKit {
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &OpenPalette, window, cx| this.open_palette(window, cx)))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| this.open_palette(window, cx)))
-            .on_action(cx.listener(|this, _: &GoBack, _, cx| this.back(cx)))
+            .on_action(cx.listener(|this, _: &GoBack, window, cx| this.back(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleTheme, window, cx| this.toggle_theme(window, cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.go(View::Settings, window, cx)))
-            .on_mouse_down(gpui_kit::MouseButton::Navigate(gpui_kit::NavigationDirection::Back), cx.listener(|this, _, _, cx| this.back(cx)))
+            .on_mouse_down(gpui_kit::MouseButton::Navigate(gpui_kit::NavigationDirection::Back), cx.listener(|this, _, window, cx| this.back(window, cx)))
             .relative()
             .size_full()
             .flex()

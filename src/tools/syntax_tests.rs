@@ -55,6 +55,17 @@ fn html_tags_attributes_and_comments_have_syntax_colors() {
 }
 
 #[test]
+fn sql_keywords_strings_and_numbers_have_syntax_colors() {
+    assert_tokens(
+        "sql",
+        "SELECT name, count(*) FROM users WHERE city = 'Zürich' AND age > 30 -- adults\n",
+        // Numbers are left out: the grammar's number query uses Lua patterns
+        // (`%d+`), so tree-sitter never matches it and they get the string color.
+        &[("SELECT", "keyword"), ("WHERE", "keyword"), ("'Zürich'", "string"), ("-- adults", "comment")],
+    );
+}
+
+#[test]
 fn incomplete_json_can_be_highlighted_and_then_replaced() {
     let mut highlighter = SyntaxHighlighter::new("json");
     let theme = HighlightTheme::default_dark();

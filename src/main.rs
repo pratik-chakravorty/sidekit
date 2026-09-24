@@ -2,6 +2,8 @@
 
 mod app;
 mod icons;
+mod library;
+mod library_view;
 mod logic;
 mod palette;
 mod registry;
@@ -47,7 +49,10 @@ fn main() {
         gpui_kit::init(cx);
         mark("kit init");
 
-        let settings = Settings::load();
+        let mut settings = Settings::load();
+        if settings.follow_system {
+            settings.dark = theme::system_dark(cx);
+        }
         let dark = settings.dark;
         cx.set_global(settings);
         theme::apply(dark, None, cx);

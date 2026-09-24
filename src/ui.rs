@@ -835,3 +835,133 @@ pub fn dropdown(
 pub fn divider(pal: &Pal) -> Div {
     div().h(px(1.)).mx(px(10.)).my(px(6.)).bg(pal.stroke).flex_none()
 }
+
+/// A large figure over a small caption, for rows of text statistics.
+pub fn stat_tile(value: impl Into<SharedString>, label: &'static str, pal: &Pal) -> Stateful<Div> {
+    let p = *pal;
+    div()
+        .id(label)
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .px(px(16.))
+        .py(px(12.))
+        .min_w_0()
+        .rounded(px(8.))
+        .bg(p.card)
+        .border_1()
+        .border_color(p.stroke)
+        .hover(move |s| s.border_color(p.accent))
+        .child(div().text_size(px(22.)).font_weight(FontWeight::SEMIBOLD).child(value.into()))
+        .child(div().text_size(px(12.)).text_color(p.text3).child(label))
+}
+
+pub struct MenuEntry {
+    pub label: SharedString,
+    pub icon: Option<&'static str>,
+    pub danger: bool,
+}
+
+impl MenuEntry {
+    pub fn new(label: impl Into<SharedString>, icon: Option<&'static str>) -> Self {
+        Self { label: label.into(), icon, danger: false }
+    }
+
+    pub fn danger(mut self) -> Self {
+        self.danger = true;
+        self
+    }
+}
+
+/// A button that opens a list of actions, anchored under its right edge.
+/// Without a label it is an icon button (default: "more").
+#[allow(clippy::too_many_arguments)]
+pub fn menu_btn(
+    id: impl Into<ElementId>,
+    icon_name: Option<&'static str>,
+    label: Option<SharedString>,
+    kind: BtnKind,
+    entries: Vec<MenuEntry>,
+    pal: &Pal,
+    window: &mut Window,
+    cx: &mut App,
+    on_pick: impl Fn(usize, &mut Window, &mut App) + 'static,
+) -> Div {
+    let p = *pal;
+    let id: ElementId = id.into();
+    let open = window.use_keyed_state(child(&id, "open"), cx, |_, _| false);
+    let is_open = *open.read(cx);
+    let on_pick = Rc::new(on_pick);
+    let toggle_state = open.clone();
+    let toggle = move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+        toggle_state.update(cx, |v, cx| {
+            *v = !*v;
+            cx.notify();
+        })
+    };
+    let chev = if matches!(kind, BtnKind::Accent) { p.accent_text } else { p.text3 };
+    let trigger = match label {
+        Some(l) => btn(child(&id, "btn"), icon_name, l, kind, pal, toggle).child(icon("chev-down", 12., chev)),
+        None => icon_btn(child(&id, "btn"), icon_name.unwrap_or("more"), pal, toggle),
+    };
+    div().relative().flex_none().child(trigger).when(is_open, |d| {
+        let close = open.clone();
+        d.child(div().absolute().top(px(36.)).right_0().child(
+            deferred(
+                anchored().snap_to_window_with_margin(px(8.)).child(
+                    div()
+                        .id(child(&id, "menu"))
+                        .occlude()
+                        .min_w(px(220.))
+                        .p(px(4.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .bg(p.card)
+                        .border_1()
+                        .border_color(p.stroke_strong)
+                        .rounded(px(8.))
+                        .shadow(p.shadow())
+                        .text_size(px(13.))
+                        .text_color(p.text)
+                        .on_mouse_down_out({
+                            let close = close.clone();
+                            move |_, _, cx| {
+                                close.update(cx, |v, cx| {
+                                    *v = false;
+                                    cx.notify();
+                                })
+                            }
+                        })
+                        .children(entries.into_iter().enumerate().map(|(i, e)| {
+                            let close = close.clone();
+                            let on_pick = on_pick.clone();
+                            let fg = if e.danger { p.danger } else { p.text };
+                            div()
+                                .id(child(&id, i))
+                                .flex()
+                                .items_center()
+                                .gap(px(10.))
+                                .h(px(32.))
+                                .px(px(10.))
+                                .rounded(px(5.))
+                                .cursor_pointer()
+                                .whitespace_nowrap()
+                                .text_color(fg)
+                                .hover(move |s| s.bg(p.subtle2))
+                                .when_some(e.icon, |d, n| d.child(icon(n, 15., fg)))
+                                .child(e.label)
+                                .on_click(move |_, w, cx| {
+                                    close.update(cx, |v, cx| {
+                                        *v = false;
+                                        cx.notify();
+                                    });
+                                    on_pick(i, w, cx);
+                                })
+                        })),
+                ),
+            )
+            .with_priority(1),
+        ))
+    })
+}

@@ -6,7 +6,7 @@ description = "A fast, native developer toolbox built on GPUI"
 repository = "https://github.com/pratik-chakravorty/sidekit"
 
 [dependencies]
-gpui-kit = { version = "0.6", features = ["tree-sitter", "tree-sitter-yaml", "tree-sitter-html"] }
+gpui-kit = { version = "0.6", features = ["tree-sitter", "tree-sitter-yaml", "tree-sitter-html", "tree-sitter-toml", "tree-sitter-markdown", "tree-sitter-markdown-inline", "tree-sitter-diff", "tree-sitter-sql"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 base64 = "0.22"
@@ -17,6 +17,14 @@ getrandom = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 iana-time-zone = "0.1"
 fancy-regex = "0.14"
+serde_yaml = "0.9"
+toml = { version = "1", features = ["preserve_order"] }
+sqlformat = "0.5"
+quick-xml = "0.42"
+serde_json_path = "0.7"
+similar = "3"
+x509-parser = "0.18"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 [build-dependencies]
 winresource = "0.1"

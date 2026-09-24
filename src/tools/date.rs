@@ -43,7 +43,7 @@ impl DateView {
     }
 
     /// Switch direction, carrying the current value across so nothing is lost.
-    fn set_mode(&mut self, to_unix: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn set_mode(&mut self, to_unix: bool, window: &mut Window, cx: &mut Context<Self>) {
         if to_unix == self.to_unix {
             return;
         }

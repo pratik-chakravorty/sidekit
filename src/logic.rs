@@ -3,6 +3,15 @@
 use base64::Engine as _;
 use serde_json::Value;
 
+pub mod cert;
+pub mod cron;
+pub mod csv;
+pub mod diff;
+pub mod iprange;
+pub mod media;
+pub mod mock;
+pub mod xml;
+
 // ---------------------------------------------------------------- helpers
 
 pub fn thousands(n: u64) -> String {
@@ -12,7 +21,8 @@ pub fn thousands(n: u64) -> String {
 
 /// `C.plural`: "1 byte", "2,048 bytes".
 pub fn plural(n: usize, word: &str) -> String {
-    let w = if n == 1 { word.to_string() } else if word == "match" { "matches".into() } else { format!("{word}s") };
+    let es = ["s", "x", "ch", "sh"].iter().any(|e| word.ends_with(e));
+    let w = if n == 1 { word.to_string() } else if es { format!("{word}es") } else { format!("{word}s") };
     format!("{} {}", thousands(n as u64), w)
 }
 
@@ -385,30 +395,148 @@ pub fn esc_dec(s: &str) -> Result<String, ()> {
     Ok(out)
 }
 
+/// UTF-8 bytes as space-separated lowercase hex pairs.
+pub fn hex_enc(s: &str) -> String {
+    s.bytes().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+}
+
+/// Hex bytes back to UTF-8 text. Takes contiguous or separated pairs
+/// (spaces, `:`, `-`, `,`) with optional `0x` or `\x` prefixes.
+pub fn hex_dec(s: &str) -> Result<String, ()> {
+    let s = s.replace("\\x", " ");
+    let mut digits = String::new();
+    for tok in s.split(|c: char| c.is_whitespace() || ",:-;".contains(c)) {
+        let tok = tok.strip_prefix("0x").or_else(|| tok.strip_prefix("0X")).unwrap_or(tok);
+        if tok.len() % 2 == 1 || !tok.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(());
+        }
+        digits.push_str(tok);
+    }
+    let bytes = (0..digits.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&digits[i..i + 2], 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .map_err(|_| ())?;
+    String::from_utf8(bytes).map_err(|_| ())
+}
+
 // ---------------------------------------------------------------- hashes
 
-pub fn hashes(text: &str) -> [(&'static str, String); 5] {
+fn to_hex(d: &[u8]) -> String {
+    d.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Plain digests of `text`, or HMACs of it when a `key` is given.
+pub fn hashes(text: &str, key: Option<&str>) -> Vec<(&'static str, String)> {
     use md5::Digest as _;
     let b = text.as_bytes();
-    let hex = |d: &[u8]| d.iter().map(|x| format!("{x:02x}")).collect::<String>();
-    [
-        ("MD5", hex(&md5::Md5::digest(b))),
-        ("SHA-1", hex(&sha1::Sha1::digest(b))),
-        ("SHA-256", hex(&sha2::Sha256::digest(b))),
-        ("SHA-384", hex(&sha2::Sha384::digest(b))),
-        ("SHA-512", hex(&sha2::Sha512::digest(b))),
-    ]
+    match key {
+        None => vec![
+            ("MD5", to_hex(&md5::Md5::digest(b))),
+            ("SHA-1", to_hex(&sha1::Sha1::digest(b))),
+            ("SHA-224", to_hex(&sha2::Sha224::digest(b))),
+            ("SHA-256", to_hex(&sha2::Sha256::digest(b))),
+            ("SHA-384", to_hex(&sha2::Sha384::digest(b))),
+            ("SHA-512", to_hex(&sha2::Sha512::digest(b))),
+            ("CRC-32", format!("{:08x}", crc32(b))),
+        ],
+        Some(k) => {
+            let k = k.as_bytes();
+            vec![
+                ("HMAC-MD5", to_hex(&hmac::<md5::Md5>(k, b, 64))),
+                ("HMAC-SHA1", to_hex(&hmac::<sha1::Sha1>(k, b, 64))),
+                ("HMAC-SHA224", to_hex(&hmac::<sha2::Sha224>(k, b, 64))),
+                ("HMAC-SHA256", to_hex(&hmac::<sha2::Sha256>(k, b, 64))),
+                ("HMAC-SHA384", to_hex(&hmac::<sha2::Sha384>(k, b, 128))),
+                ("HMAC-SHA512", to_hex(&hmac::<sha2::Sha512>(k, b, 128))),
+            ]
+        }
+    }
+}
+
+/// RFC 2104 HMAC over a digest with the given block size in bytes.
+fn hmac<D: md5::Digest>(key: &[u8], msg: &[u8], block: usize) -> Vec<u8> {
+    let mut k = if key.len() > block { D::digest(key).to_vec() } else { key.to_vec() };
+    k.resize(block, 0);
+    let pad = |x: u8| k.iter().map(|b| b ^ x).collect::<Vec<u8>>();
+    let inner = D::new().chain_update(pad(0x36)).chain_update(msg).finalize();
+    D::new().chain_update(pad(0x5c)).chain_update(inner).finalize().to_vec()
+}
+
+/// CRC-32 (IEEE, as used by zip and PNG).
+pub fn crc32(b: &[u8]) -> u32 {
+    let mut c = !0u32;
+    for &x in b {
+        c ^= x as u32;
+        for _ in 0..8 {
+            c = if c & 1 != 0 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 };
+        }
+    }
+    !c
 }
 
 // ---------------------------------------------------------------- UUID / passwords / lorem
+
+fn fmt_uuid(b: &[u8; 16]) -> String {
+    let h = to_hex(b);
+    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+}
+
+fn now_ms() -> u64 {
+    chrono::Utc::now().timestamp_millis().max(0) as u64
+}
 
 pub fn uuid_v4() -> String {
     let mut b = [0u8; 16];
     getrandom::fill(&mut b).expect("OS randomness");
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
-    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
-    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+    fmt_uuid(&b)
+}
+
+/// RFC 9562 version 7: a 48-bit millisecond timestamp, then random bits.
+pub fn uuid_v7() -> String {
+    let mut b = [0u8; 16];
+    getrandom::fill(&mut b).expect("OS randomness");
+    b[..6].copy_from_slice(&now_ms().to_be_bytes()[2..]);
+    b[6] = (b[6] & 0x0f) | 0x70;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    fmt_uuid(&b)
+}
+
+const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// A ULID: 48-bit millisecond timestamp and 80 random bits in Crockford Base32.
+pub fn ulid() -> String {
+    let mut r = [0u8; 10];
+    getrandom::fill(&mut r).expect("OS randomness");
+    let mut v = ((now_ms() & 0xFFFF_FFFF_FFFF) as u128) << 80;
+    for (i, x) in r.iter().enumerate() {
+        v |= (*x as u128) << (72 - 8 * i);
+    }
+    (0..26).map(|i| CROCKFORD[((v >> ((25 - i) * 5)) & 31) as usize] as char).collect()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum IdKind {
+    UuidV4,
+    UuidV7,
+    Ulid,
+}
+
+/// `n` identifiers; time-ordered kinds come back sorted, so a batch made
+/// within one millisecond still lists in creation order.
+pub fn make_ids(kind: IdKind, n: usize) -> Vec<String> {
+    let make = match kind {
+        IdKind::UuidV4 => uuid_v4,
+        IdKind::UuidV7 => uuid_v7,
+        IdKind::Ulid => ulid,
+    };
+    let mut ids: Vec<String> = (0..n).map(|_| make()).collect();
+    if kind != IdKind::UuidV4 {
+        ids.sort();
+    }
+    ids
 }
 
 pub struct PwSet {
@@ -739,6 +867,657 @@ pub fn text_stats(t: &str) -> [(String, &'static str); 5] {
     ]
 }
 
+// ---------------------------------------------------------------- lines
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LineSort {
+    Keep,
+    Asc,
+    Desc,
+    Natural,
+    Length,
+    Reverse,
+    Shuffle,
+}
+
+pub struct LineOpts {
+    pub sort: LineSort,
+    pub dedupe: bool,
+    pub ignore_case: bool,
+    pub trim: bool,
+    pub drop_empty: bool,
+    /// Seed for `LineSort::Shuffle`, so a shuffle holds still until asked again.
+    pub seed: u32,
+}
+
+pub struct LinesOut {
+    pub text: String,
+    pub lines: usize,
+    pub dupes: usize,
+    pub empties: usize,
+}
+
+fn digit_run(it: &mut std::iter::Peekable<std::str::Chars>) -> String {
+    let mut s = String::new();
+    while let Some(&c) = it.peek().filter(|c| c.is_ascii_digit()) {
+        s.push(c);
+        it.next();
+    }
+    s
+}
+
+/// Compare with runs of digits taken as numbers, so "file2" sorts before "file10".
+pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering::*;
+    let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (x.peek().copied(), y.peek().copied()) {
+            (None, None) => return Equal,
+            (None, _) => return Less,
+            (_, None) => return Greater,
+            (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
+                let (m, n) = (digit_run(&mut x), digit_run(&mut y));
+                let (m, n) = (m.trim_start_matches('0'), n.trim_start_matches('0'));
+                let ord = m.len().cmp(&n.len()).then_with(|| m.cmp(n));
+                if ord != Equal {
+                    return ord;
+                }
+            }
+            (Some(c), Some(d)) => {
+                if c != d {
+                    return c.cmp(&d);
+                }
+                x.next();
+                y.next();
+            }
+        }
+    }
+}
+
+pub fn process_lines(t: &str, o: &LineOpts) -> LinesOut {
+    let key = |s: &str| if o.ignore_case { s.to_lowercase() } else { s.to_string() };
+    let mut lines: Vec<&str> = t.lines().map(|l| if o.trim { l.trim() } else { l }).collect();
+    let total = lines.len();
+    if o.drop_empty {
+        lines.retain(|l| !l.trim().is_empty());
+    }
+    let empties = total - lines.len();
+    let before = lines.len();
+    if o.dedupe {
+        let mut seen = std::collections::HashSet::new();
+        lines.retain(|l| seen.insert(key(l)));
+    }
+    let dupes = before - lines.len();
+    // Ties fall back to the raw text so case-insensitive sorts stay deterministic.
+    match o.sort {
+        LineSort::Keep => {}
+        LineSort::Asc => lines.sort_by(|a, b| key(a).cmp(&key(b)).then_with(|| a.cmp(b))),
+        LineSort::Desc => lines.sort_by(|a, b| key(b).cmp(&key(a)).then_with(|| b.cmp(a))),
+        LineSort::Natural => lines.sort_by(|a, b| natural_cmp(&key(a), &key(b)).then_with(|| a.cmp(b))),
+        LineSort::Length => lines.sort_by_key(|l| l.chars().count()),
+        LineSort::Reverse => lines.reverse(),
+        LineSort::Shuffle => {
+            let mut r = Prng(o.seed);
+            for i in (1..lines.len()).rev() {
+                lines.swap(i, ((r.next() * (i + 1) as f64) as usize).min(i));
+            }
+        }
+    }
+    LinesOut { text: lines.join("\n"), lines: lines.len(), dupes, empties }
+}
+
+// ---------------------------------------------------------------- URL parser
+
+pub struct UrlParts {
+    pub rows: Vec<(&'static str, String)>,
+    pub params: Vec<(String, String)>,
+}
+
+fn default_port(scheme: &str) -> Option<u16> {
+    Some(match scheme {
+        "http" | "ws" => 80,
+        "https" | "wss" => 443,
+        "ftp" => 21,
+        "ssh" | "sftp" => 22,
+        "postgres" | "postgresql" => 5432,
+        "mysql" => 3306,
+        "redis" => 6379,
+        "mongodb" => 27017,
+        "amqp" => 5672,
+        _ => return None,
+    })
+}
+
+/// Decode a query-string component: `+` is a space, bad escapes are left as typed.
+fn form_dec(s: &str) -> String {
+    let s = s.replace('+', " ");
+    url_dec(&s).unwrap_or(s)
+}
+
+/// Split a URL into its parts (RFC 3986 layout) and decode its query parameters.
+pub fn parse_url(s: &str) -> Result<UrlParts, String> {
+    let dec = |s: &str| url_dec(s).unwrap_or_else(|_| s.to_string());
+    let s = s.trim();
+    let (scheme, rest) = s
+        .split_once(':')
+        .filter(|(sc, _)| {
+            sc.starts_with(|c: char| c.is_ascii_alphabetic()) && sc.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+        })
+        .ok_or("Not a URL: it should start with a scheme such as https://")?;
+    let scheme = scheme.to_lowercase();
+    let (rest, fragment) = match rest.split_once('#') {
+        Some((r, f)) => (r, Some(f)),
+        None => (rest, None),
+    };
+    let (rest, query) = match rest.split_once('?') {
+        Some((r, q)) => (r, Some(q)),
+        None => (rest, None),
+    };
+    let (authority, path) = match rest.strip_prefix("//") {
+        Some(r) => match r.find('/') {
+            Some(i) => (Some(&r[..i]), &r[i..]),
+            None => (Some(r), ""),
+        },
+        None => (None, rest),
+    };
+
+    let mut rows = vec![("Scheme", scheme.clone())];
+    if let Some(a) = authority {
+        let (userinfo, hostport) = match a.rsplit_once('@') {
+            Some((u, h)) => (Some(u), h),
+            None => (None, a),
+        };
+        if let Some(u) = userinfo {
+            let (user, pass) = match u.split_once(':') {
+                Some((u, p)) => (u, Some(p)),
+                None => (u, None),
+            };
+            rows.push(("Username", dec(user)));
+            if let Some(p) = pass {
+                rows.push(("Password", dec(p)));
+            }
+        }
+        let (host, port) = if hostport.starts_with('[') {
+            let end = hostport.find(']').ok_or("The IPv6 host is missing its closing ]")?;
+            let tail = &hostport[end + 1..];
+            if !tail.is_empty() && !tail.starts_with(':') {
+                return Err("Unexpected text after the IPv6 host".into());
+            }
+            (&hostport[..=end], tail.strip_prefix(':'))
+        } else {
+            match hostport.rsplit_once(':') {
+                Some((h, p)) => (h, Some(p)),
+                None => (hostport, None),
+            }
+        };
+        if host.is_empty() && scheme != "file" {
+            return Err("The URL has no host".into());
+        }
+        let host = dec(host).to_lowercase();
+        rows.push(("Host", host.clone()));
+        let port = port.filter(|p| !p.is_empty());
+        match port {
+            Some(p) => {
+                p.parse::<u16>().map_err(|_| format!("\"{p}\" is not a valid port"))?;
+                rows.push(("Port", p.to_string()));
+            }
+            None => {
+                if let Some(d) = default_port(&scheme) {
+                    rows.push(("Port", format!("{d} (default)")));
+                }
+            }
+        }
+        let origin_port = port.map(|p| format!(":{p}")).unwrap_or_default();
+        rows.push(("Origin", format!("{scheme}://{host}{origin_port}")));
+    }
+    rows.push(("Path", if path.is_empty() && authority.is_some() { "/".into() } else { dec(path) }));
+    if let Some(q) = query {
+        rows.push(("Query", q.to_string()));
+    }
+    if let Some(f) = fragment {
+        rows.push(("Fragment", dec(f)));
+    }
+    let params = query
+        .unwrap_or("")
+        .split('&')
+        .filter(|kv| !kv.is_empty())
+        .map(|kv| match kv.split_once('=') {
+            Some((k, v)) => (form_dec(k), form_dec(v)),
+            None => (form_dec(kv), String::new()),
+        })
+        .collect();
+    Ok(UrlParts { rows, params })
+}
+
+// ---------------------------------------------------------------- Unicode inspector
+
+/// Names for the characters people most often need to spot: whitespace,
+/// invisible formatting marks and bidi controls.
+fn special_name(c: char) -> Option<&'static str> {
+    Some(match c {
+        '\0' => "NULL",
+        '\t' => "TAB",
+        '\n' => "LINE FEED",
+        '\r' => "CARRIAGE RETURN",
+        ' ' => "SPACE",
+        '\u{A0}' => "NO-BREAK SPACE",
+        '\u{AD}' => "SOFT HYPHEN",
+        '\u{2000}'..='\u{200A}' => "TYPOGRAPHIC SPACE",
+        '\u{200B}' => "ZERO WIDTH SPACE",
+        '\u{200C}' => "ZERO WIDTH NON-JOINER",
+        '\u{200D}' => "ZERO WIDTH JOINER",
+        '\u{200E}' => "LEFT-TO-RIGHT MARK",
+        '\u{200F}' => "RIGHT-TO-LEFT MARK",
+        '\u{2028}' => "LINE SEPARATOR",
+        '\u{2029}' => "PARAGRAPH SEPARATOR",
+        '\u{202A}'..='\u{202E}' => "BIDI EMBEDDING / OVERRIDE",
+        '\u{202F}' => "NARROW NO-BREAK SPACE",
+        '\u{2060}' => "WORD JOINER",
+        '\u{2066}'..='\u{2069}' => "BIDI ISOLATE",
+        '\u{3000}' => "IDEOGRAPHIC SPACE",
+        '\u{FE0E}' => "VARIATION SELECTOR-15 (text)",
+        '\u{FE0F}' => "VARIATION SELECTOR-16 (emoji)",
+        '\u{FEFF}' => "BYTE ORDER MARK",
+        '\u{FFFD}' => "REPLACEMENT CHARACTER",
+        _ => return None,
+    })
+}
+
+fn is_combining(c: char) -> bool {
+    matches!(c as u32, 0x300..=0x36F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0xFE20..=0xFE2F)
+}
+
+/// Characters that render as nothing (or like a plain space) but are not one.
+pub fn is_invisible(c: char) -> bool {
+    !matches!(c, ' ' | '\t' | '\n' | '\r') && (special_name(c).is_some() || c.is_control())
+}
+
+pub struct CharInfo {
+    /// What to draw for the character; invisible ones get a visible stand-in.
+    pub shown: String,
+    pub code: String,
+    pub kind: &'static str,
+    pub utf8: String,
+    pub flagged: bool,
+}
+
+pub fn char_info(c: char) -> CharInfo {
+    let n = c as u32;
+    // Control pictures (U+2400 on) are missing from most fonts, so use short names.
+    let shown = match c {
+        ' ' => "SP".to_string(),
+        '\t' => "TAB".to_string(),
+        '\n' => "LF".to_string(),
+        '\r' => "CR".to_string(),
+        '\u{7F}' => "DEL".to_string(),
+        _ if n < 0x20 => format!("^{}", char::from(n as u8 + 64)),
+        _ if is_invisible(c) => "◌".to_string(),
+        _ if is_combining(c) => format!("◌{c}"),
+        _ => c.to_string(),
+    };
+    let kind = special_name(c).unwrap_or_else(|| {
+        if c.is_control() {
+            "Control"
+        } else if is_combining(c) {
+            "Combining mark"
+        } else if c.is_ascii_digit() || c.is_numeric() {
+            "Number"
+        } else if c.is_alphabetic() {
+            if c.is_ascii() { "Latin letter" } else { "Letter" }
+        } else if c.is_whitespace() {
+            "Whitespace"
+        } else if c.is_ascii_punctuation() {
+            "Punctuation"
+        } else if matches!(n, 0x1F000..=0x1FAFF | 0x2600..=0x27BF | 0x2B00..=0x2BFF) {
+            "Emoji / symbol"
+        } else {
+            "Symbol / other"
+        }
+    });
+    let mut buf = [0u8; 4];
+    let utf8 = c.encode_utf8(&mut buf).bytes().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ");
+    CharInfo { shown, code: format!("U+{n:04X}"), kind, utf8, flagged: is_invisible(c) }
+}
+
+pub fn unicode_stats(t: &str) -> [(String, &'static str); 5] {
+    [
+        (thousands(t.chars().count() as u64), "Code points"),
+        (thousands(t.len() as u64), "UTF-8 bytes"),
+        (thousands(t.encode_utf16().count() as u64), "UTF-16 units"),
+        (thousands(t.chars().filter(|c| !c.is_ascii()).count() as u64), "Non-ASCII"),
+        (thousands(t.chars().filter(|c| is_invisible(*c)).count() as u64), "Invisible"),
+    ]
+}
+
+/// The text escaped for a few common targets.
+pub fn unicode_escapes(t: &str) -> Vec<(&'static str, String)> {
+    let mut js = String::new();
+    let mut rust = String::new();
+    let mut py = String::new();
+    let mut html = String::new();
+    for c in t.chars() {
+        let n = c as u32;
+        let simple = match c {
+            '\n' => Some("\\n"),
+            '\t' => Some("\\t"),
+            '\r' => Some("\\r"),
+            '\\' => Some("\\\\"),
+            '"' => Some("\\\""),
+            _ => None,
+        };
+        if let Some(s) = simple {
+            js.push_str(s);
+            rust.push_str(s);
+            py.push_str(s);
+        } else if (0x20..0x7F).contains(&n) {
+            js.push(c);
+            rust.push(c);
+            py.push(c);
+        } else {
+            for u in c.encode_utf16(&mut [0u16; 2]) {
+                js.push_str(&format!("\\u{u:04X}"));
+            }
+            rust.push_str(&format!("\\u{{{n:X}}}"));
+            py.push_str(&if n <= 0xFFFF { format!("\\u{n:04X}") } else { format!("\\U{n:08X}") });
+        }
+        match c {
+            '&' => html.push_str("&amp;"),
+            '<' => html.push_str("&lt;"),
+            '>' => html.push_str("&gt;"),
+            '"' => html.push_str("&quot;"),
+            _ if c.is_ascii() && (!c.is_control() || c == '\n' || c == '\t') => html.push(c),
+            _ => html.push_str(&format!("&#x{n:X};")),
+        }
+    }
+    let points = t.chars().map(|c| format!("U+{:04X}", c as u32)).collect::<Vec<_>>().join(" ");
+    vec![("JavaScript / JSON", js), ("Rust", rust), ("Python", py), ("HTML entities", html), ("Code points", points)]
+}
+
+// ---------------------------------------------------------------- network
+
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+fn ipv4_kind(a: Ipv4Addr) -> &'static str {
+    let o = a.octets();
+    if a.is_unspecified() {
+        "Unspecified"
+    } else if a.is_loopback() {
+        "Loopback"
+    } else if a.is_private() {
+        "Private (RFC 1918)"
+    } else if o[0] == 100 && (64..128).contains(&o[1]) {
+        "Shared / CGNAT (RFC 6598)"
+    } else if a.is_link_local() {
+        "Link-local"
+    } else if a.is_documentation() {
+        "Documentation (RFC 5737)"
+    } else if a.is_multicast() {
+        "Multicast"
+    } else if a.is_broadcast() {
+        "Broadcast"
+    } else if o[0] >= 240 {
+        "Reserved"
+    } else {
+        "Public"
+    }
+}
+
+fn ipv6_kind(a: Ipv6Addr) -> &'static str {
+    let s = a.segments();
+    if a.is_unspecified() {
+        "Unspecified"
+    } else if a.is_loopback() {
+        "Loopback"
+    } else if a.to_ipv4_mapped().is_some() {
+        "IPv4-mapped"
+    } else if s[0] & 0xffc0 == 0xfe80 {
+        "Link-local"
+    } else if s[0] & 0xfe00 == 0xfc00 {
+        "Unique local (ULA)"
+    } else if a.is_multicast() {
+        "Multicast"
+    } else if s[0] == 0x2001 && s[1] == 0x0db8 {
+        "Documentation (RFC 3849)"
+    } else if s[0] & 0xe000 == 0x2000 {
+        "Global unicast"
+    } else {
+        "Reserved"
+    }
+}
+
+/// Everything about an address and its network: `10.1.2.3/24`,
+/// `10.1.2.3 255.255.255.0`, `2001:db8::1/64` or a bare address.
+pub fn subnet(input: &str) -> Result<Vec<(&'static str, String)>, String> {
+    let t = input.trim();
+    if t.is_empty() {
+        return Err("Type an IPv4 or IPv6 address, optionally with a /prefix".into());
+    }
+    let (addr, prefix) = match t.split_once(['/', ' ']) {
+        Some((a, p)) => (a.trim(), Some(p.trim())),
+        None => (t, None),
+    };
+    let ip: IpAddr = addr.parse().map_err(|_| format!("\"{addr}\" is not an IPv4 or IPv6 address"))?;
+    match ip {
+        IpAddr::V4(a) => {
+            let p = match prefix {
+                None => 32,
+                Some(p) if p.contains('.') => {
+                    let m = u32::from(p.parse::<Ipv4Addr>().map_err(|_| format!("\"{p}\" is not a netmask"))?);
+                    if m.leading_ones() + m.trailing_zeros() != 32 {
+                        return Err(format!("{p} is not a contiguous netmask"));
+                    }
+                    m.leading_ones()
+                }
+                Some(p) => p.parse::<u32>().ok().filter(|p| *p <= 32).ok_or(format!("/{p} is not a prefix between 0 and 32"))?,
+            };
+            let ip = u32::from(a);
+            let mask = if p == 0 { 0 } else { u32::MAX << (32 - p) };
+            let net = ip & mask;
+            let bc = net | !mask;
+            let (first, last, usable) = match p {
+                32 => (net, net, 1u64),
+                31 => (net, bc, 2),
+                _ => (net + 1, bc - 1, (1u64 << (32 - p)) - 2),
+            };
+            let v4 = |n: u32| Ipv4Addr::from(n).to_string();
+            let o = a.octets();
+            Ok(vec![
+                ("Address", format!("{a}/{p}")),
+                ("Network", format!("{}/{p}", v4(net))),
+                ("Netmask", v4(mask)),
+                ("Wildcard mask", v4(!mask)),
+                ("Broadcast", if p >= 31 { "—".into() } else { v4(bc) }),
+                ("Host range", if first == last { v4(first) } else { format!("{} – {}", v4(first), v4(last)) }),
+                ("Usable hosts", thousands(usable)),
+                ("Total addresses", thousands(1u64 << (32 - p))),
+                ("Type", ipv4_kind(a).into()),
+                ("Integer", ip.to_string()),
+                ("Hex", format!("0x{ip:08X}")),
+                ("Binary", o.iter().map(|b| format!("{b:08b}")).collect::<Vec<_>>().join(".")),
+                ("IPv4-mapped IPv6", format!("::ffff:{a}")),
+                ("Reverse DNS", format!("{}.{}.{}.{}.in-addr.arpa", o[3], o[2], o[1], o[0])),
+            ])
+        }
+        IpAddr::V6(a) => {
+            let p = match prefix {
+                None => 128,
+                Some(p) => p.parse::<u32>().ok().filter(|p| *p <= 128).ok_or(format!("/{p} is not a prefix between 0 and 128"))?,
+            };
+            let ip = u128::from(a);
+            let mask = if p == 0 { 0 } else { u128::MAX << (128 - p) };
+            let net = ip & mask;
+            let last = net | !mask;
+            let v6 = |n: u128| Ipv6Addr::from(n).to_string();
+            let total = if p == 0 { "2^128".to_string() } else { format!("{} (2^{})", group(&(1u128 << (128 - p)).to_string(), 3, ","), 128 - p) };
+            let expanded = a.segments().iter().map(|s| format!("{s:04x}")).collect::<Vec<_>>().join(":");
+            let nibbles: String = expanded.chars().rev().filter(|c| *c != ':').flat_map(|c| [c, '.']).collect();
+            Ok(vec![
+                ("Address", format!("{a}/{p}")),
+                ("Expanded", expanded),
+                ("Network", format!("{}/{p}", v6(net))),
+                ("First address", v6(net)),
+                ("Last address", v6(last)),
+                ("Total addresses", total),
+                ("Type", ipv6_kind(a).into()),
+                ("Integer", group(&ip.to_string(), 3, ",")),
+                ("Hex", format!("0x{ip:032X}")),
+                ("Reverse DNS", format!("{nibbles}ip6.arpa")),
+            ])
+        }
+    }
+}
+
+pub const MAC_FORMATS: &[&str] = &["00:1A:2B:3C:4D:5E", "00-1A-2B-3C-4D-5E", "001A.2B3C.4D5E", "001A2B3C4D5E"];
+
+/// A random unicast MAC address in one of `MAC_FORMATS`. `local` sets the
+/// locally-administered bit, so it can never clash with a vendor's address.
+pub fn mac_address(format: usize, upper: bool, local: bool) -> String {
+    let mut b = [0u8; 6];
+    getrandom::fill(&mut b).expect("OS randomness");
+    b[0] &= 0xFE;
+    if local {
+        b[0] |= 0x02;
+    } else {
+        b[0] &= 0xFD;
+    }
+    let h = to_hex(&b);
+    let pairs: Vec<&str> = (0..6).map(|i| &h[i * 2..i * 2 + 2]).collect();
+    let s = match format {
+        0 => pairs.join(":"),
+        1 => pairs.join("-"),
+        2 => format!("{}.{}.{}", &h[0..4], &h[4..8], &h[8..12]),
+        _ => h.clone(),
+    };
+    if upper { s.to_uppercase() } else { s }
+}
+
+/// An RFC 4193 unique local /48 prefix, with one random /64 inside it.
+pub fn ula() -> (String, String) {
+    let mut g = [0u8; 7];
+    getrandom::fill(&mut g).expect("OS randomness");
+    let seg = |a: u8, b: u8| (a as u16) << 8 | b as u16;
+    let (s0, s1, s2, sub) = (0xfd00 | g[0] as u16, seg(g[1], g[2]), seg(g[3], g[4]), seg(g[5], g[6]));
+    let prefix = Ipv6Addr::new(s0, s1, s2, 0, 0, 0, 0, 0);
+    let subnet = Ipv6Addr::new(s0, s1, s2, sub, 0, 0, 0, 0);
+    (format!("{prefix}/48"), format!("{subnet}/64"))
+}
+
+// ---------------------------------------------------------------- YAML / TOML
+
+fn yaml_key(k: serde_yaml::Value) -> String {
+    match k {
+        serde_yaml::Value::String(s) => s,
+        serde_yaml::Value::Null => "null".into(),
+        serde_yaml::Value::Bool(b) => b.to_string(),
+        serde_yaml::Value::Number(n) => n.to_string(),
+        other => serde_json::to_string(&yaml_json(other)).unwrap_or_default(),
+    }
+}
+
+/// YAML allows non-string keys and tags that JSON has no room for; keys are
+/// stringified and tags dropped.
+fn yaml_json(v: serde_yaml::Value) -> Value {
+    use serde_yaml::Value as Y;
+    match v {
+        Y::Null => Value::Null,
+        Y::Bool(b) => b.into(),
+        Y::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                i.into()
+            } else if let Some(u) = n.as_u64() {
+                u.into()
+            } else {
+                n.as_f64().and_then(serde_json::Number::from_f64).map(Value::Number).unwrap_or_else(|| Value::String(n.to_string()))
+            }
+        }
+        Y::String(s) => s.into(),
+        Y::Sequence(a) => Value::Array(a.into_iter().map(yaml_json).collect()),
+        Y::Mapping(m) => Value::Object(m.into_iter().map(|(k, v)| (yaml_key(k), yaml_json(v))).collect()),
+        Y::Tagged(t) => yaml_json(t.value),
+    }
+}
+
+pub fn parse_yaml(src: &str) -> Result<Value, String> {
+    let mut v: serde_yaml::Value = serde_yaml::from_str(src).map_err(|e| cap(&e.to_string()))?;
+    v.apply_merge().map_err(|e| cap(&e.to_string()))?;
+    Ok(yaml_json(v))
+}
+
+fn toml_json(v: toml::Value) -> Value {
+    use toml::Value as T;
+    match v {
+        T::String(s) => s.into(),
+        T::Integer(i) => i.into(),
+        T::Float(f) => serde_json::Number::from_f64(f).map(Value::Number).unwrap_or_else(|| Value::String(f.to_string())),
+        T::Boolean(b) => b.into(),
+        T::Datetime(d) => d.to_string().into(),
+        T::Array(a) => Value::Array(a.into_iter().map(toml_json).collect()),
+        T::Table(t) => Value::Object(t.into_iter().map(|(k, v)| (k, toml_json(v))).collect()),
+    }
+}
+
+pub fn parse_toml(src: &str) -> Result<Value, String> {
+    let t: toml::Table = toml::from_str(src).map_err(|e| e.to_string().trim().to_string())?;
+    Ok(toml_json(toml::Value::Table(t)))
+}
+
+fn json_toml(v: &Value, path: &str) -> Result<toml::Value, String> {
+    Ok(match v {
+        Value::Null => return Err(format!("TOML has no null, found one at {}", if path.is_empty() { "the top level" } else { path })),
+        Value::Bool(b) => toml::Value::Boolean(*b),
+        Value::Number(n) => match n.as_i64() {
+            Some(i) => toml::Value::Integer(i),
+            None => toml::Value::Float(n.as_f64().unwrap_or(f64::NAN)),
+        },
+        Value::String(s) => toml::Value::String(s.clone()),
+        Value::Array(a) => toml::Value::Array(
+            a.iter().enumerate().map(|(i, x)| json_toml(x, &format!("{path}[{i}]"))).collect::<Result<_, _>>()?,
+        ),
+        Value::Object(m) => toml::Value::Table(
+            m.iter()
+                .map(|(k, x)| {
+                    let p = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+                    Ok((k.clone(), json_toml(x, &p)?))
+                })
+                .collect::<Result<_, String>>()?,
+        ),
+    })
+}
+
+pub fn to_toml(v: &Value) -> Result<String, String> {
+    if !v.is_object() {
+        return Err("TOML documents are tables: the JSON must be an object at the top level".into());
+    }
+    let t = json_toml(v, "")?;
+    toml::to_string_pretty(&t).map(|s| s.trim_end().to_string()).map_err(|e| cap(&e.to_string()))
+}
+
+// ---------------------------------------------------------------- SQL / JSONPath
+
+pub const SQL_MODES: &[&str] = &["Format", "UPPERCASE keywords", "One line"];
+
+pub fn format_sql(src: &str, mode: usize, indent: u8) -> String {
+    let opts = sqlformat::FormatOptions {
+        indent: sqlformat::Indent::Spaces(indent),
+        uppercase: (mode == 1).then_some(true),
+        inline: mode == 2,
+        lines_between_queries: 2,
+        ..Default::default()
+    };
+    sqlformat::format(src, &sqlformat::QueryParams::None, &opts).trim().to_string()
+}
+
+/// Run a JSONPath query (RFC 9535) and return the matches as a JSON array,
+/// each with its normalized location.
+pub fn jsonpath(doc: &str, path: &str) -> Result<(Value, Vec<String>), String> {
+    let v: Value = serde_json::from_str(doc).map_err(|e| format!("Invalid JSON: {}", json_err(&e)))?;
+    let p = serde_json_path::JsonPath::parse(path.trim()).map_err(|e| cap(&e.to_string()))?;
+    let nodes = p.query_located(&v);
+    let locations = nodes.iter().map(|n| n.location().to_string()).collect();
+    let values = nodes.iter().map(|n| n.node().clone()).collect();
+    Ok((Value::Array(values), locations))
+}
+
 // ---------------------------------------------------------------- smart detection
 
 use crate::registry::ToolId;
@@ -753,6 +1532,12 @@ pub fn detect(text: &str) -> Option<(ToolId, &'static str)> {
     let single_line = !t.contains('\n');
 
     // JWT: three base64url segments whose header decodes to JSON.
+    if t.starts_with("-----BEGIN CERTIFICATE-----") {
+        return Some((ToolId::Cert, "a certificate"));
+    }
+    if single_line && t.starts_with("data:image/") && t.contains(";base64,") {
+        return Some((ToolId::B64Image, "an image data URI"));
+    }
     let parts: Vec<&str> = t.split('.').collect();
     if single_line && parts.len() == 3 && parts[0].starts_with("eyJ") {
         if b64url_decode(parts[0]).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).is_some() {
@@ -764,6 +1549,12 @@ pub fn detect(text: &str) -> Option<(ToolId, &'static str)> {
     }
     if single_line && parse_color(t).is_some() && (t.starts_with('#') || t.contains('(')) {
         return Some((ToolId::Color, "a color"));
+    }
+    // An IP network such as 10.0.0.0/8 or 2001:db8::/32.
+    if let Some((a, p)) = t.split_once('/').filter(|_| single_line) {
+        if a.parse::<IpAddr>().is_ok() && p.parse::<u8>().is_ok() {
+            return Some((ToolId::Subnet, "an IP network"));
+        }
     }
     // Unix time in seconds or milliseconds, between 2001 and 2100.
     if t.chars().all(|c| c.is_ascii_digit()) && (t.len() == 10 || t.len() == 13) {
@@ -777,6 +1568,10 @@ pub fn detect(text: &str) -> Option<(ToolId, &'static str)> {
         if t.as_bytes().windows(3).any(|w| w[0] == b'%' && w[1].is_ascii_hexdigit() && w[2].is_ascii_hexdigit()) {
             return Some((ToolId::Url, "URL-encoded text"));
         }
+    }
+    // A web address with a query string, worth taking apart.
+    if single_line && (t.starts_with("http://") || t.starts_with("https://")) && t.contains('?') && !t.contains(' ') {
+        return Some((ToolId::UrlParse, "a URL with query parameters"));
     }
     // Base64 of readable UTF-8 text.
     let b64_charset = t.chars().all(|c| c.is_ascii_alphanumeric() || "+/=\r\n".contains(c));
@@ -794,6 +1589,14 @@ pub fn detect(text: &str) -> Option<(ToolId, &'static str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plurals() {
+        assert_eq!(plural(1, "address"), "1 address");
+        assert_eq!(plural(264, "address"), "264 addresses");
+        assert_eq!(plural(2, "match"), "2 matches");
+        assert_eq!(plural(0, "line"), "0 lines");
+    }
 
     #[test]
     fn grouping() {
@@ -823,9 +1626,138 @@ mod tests {
 
     #[test]
     fn hashing() {
-        let h = hashes("DevToys");
+        let h = hashes("DevToys", None);
         assert_eq!(h[0].1.len(), 32);
-        assert_eq!(hashes("")[0].1, "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(hashes("", None)[0].1, "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+        let fox = "The quick brown fox jumps over the lazy dog";
+        let mac = hashes(fox, Some("key"));
+        assert_eq!(mac[0].1, "80070713463e7749b90c2dc24911e275");
+        assert_eq!(mac[3].1, "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8");
+        assert_eq!(&mac[5].1[..16], "b42af09057bac1e2");
+    }
+
+    #[test]
+    fn hex_codec() {
+        assert_eq!(hex_enc("Hi é"), "48 69 20 c3 a9");
+        assert_eq!(hex_dec("48 69 20 c3 a9").unwrap(), "Hi é");
+        assert_eq!(hex_dec("0x48:0x69").unwrap(), "Hi");
+        assert_eq!(hex_dec(r"\x48\x69").unwrap(), "Hi");
+        assert_eq!(hex_dec("4869").unwrap(), "Hi");
+        assert!(hex_dec("486").is_err());
+        assert!(hex_dec("zz").is_err());
+        assert!(hex_dec("ff").is_err());
+    }
+
+    #[test]
+    fn line_tools() {
+        let o = |sort, dedupe| LineOpts { sort, dedupe, ignore_case: true, trim: true, drop_empty: true, seed: 7 };
+        let r = process_lines("b\nfile10\n\n  B \nfile2\na", &o(LineSort::Natural, true));
+        assert_eq!(r.text, "a\nb\nfile2\nfile10");
+        assert_eq!((r.lines, r.dupes, r.empties), (4, 1, 1));
+        assert_eq!(process_lines("b\na\nc", &o(LineSort::Desc, false)).text, "c\nb\na");
+        assert_eq!(process_lines("bb\na\nccc", &o(LineSort::Length, false)).text, "a\nbb\nccc");
+        let s = process_lines("1\n2\n3\n4\n5", &o(LineSort::Shuffle, false)).text;
+        assert_eq!(s, process_lines("1\n2\n3\n4\n5", &o(LineSort::Shuffle, false)).text);
+        let mut sorted: Vec<&str> = s.lines().collect();
+        sorted.sort();
+        assert_eq!(sorted, ["1", "2", "3", "4", "5"]);
+    }
+
+    #[test]
+    fn url_parts() {
+        let u = parse_url("https://user:p%40ss@Example.com:8443/a%20b/c?q=dev+toys&x=%26&flag#top").unwrap();
+        let get = |k: &str| u.rows.iter().find(|r| r.0 == k).map(|r| r.1.clone());
+        assert_eq!(get("Host").as_deref(), Some("example.com"));
+        assert_eq!(get("Password").as_deref(), Some("p@ss"));
+        assert_eq!(get("Port").as_deref(), Some("8443"));
+        assert_eq!(get("Origin").as_deref(), Some("https://example.com:8443"));
+        assert_eq!(get("Path").as_deref(), Some("/a b/c"));
+        assert_eq!(get("Fragment").as_deref(), Some("top"));
+        let params: Vec<(String, String)> =
+            [("q", "dev toys"), ("x", "&"), ("flag", "")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        assert_eq!(u.params, params);
+        let v6 = parse_url("http://[::1]/").unwrap();
+        assert_eq!(v6.rows.iter().find(|r| r.0 == "Port").unwrap().1, "80 (default)");
+        assert!(parse_url("mailto:me@example.com").is_ok());
+        assert!(parse_url("example.com/path").is_err());
+        assert!(parse_url("http://host:99999/").is_err());
+    }
+
+    #[test]
+    fn unicode() {
+        let i = char_info('\u{200B}');
+        assert!(i.flagged);
+        assert_eq!((i.code.as_str(), i.kind, i.utf8.as_str()), ("U+200B", "ZERO WIDTH SPACE", "E2 80 8B"));
+        assert_eq!(char_info('\n').shown, "LF");
+        assert_eq!(char_info('\u{1}').shown, "^A");
+        let e = unicode_escapes("é👋\"");
+        assert_eq!(e[0].1, r#"\u00E9\uD83D\uDC4B\""#);
+        assert_eq!(e[1].1, r#"\u{E9}\u{1F44B}\""#);
+        assert_eq!(e[2].1, r#"\u00E9\U0001F44B\""#);
+        assert_eq!(e[3].1, "&#xE9;&#x1F44B;&quot;");
+        assert_eq!(unicode_stats("a\u{FEFF}é")[4].0, "1");
+    }
+
+    #[test]
+    fn subnets() {
+        let get = |input: &str, k: &str| subnet(input).unwrap().into_iter().find(|r| r.0 == k).unwrap().1;
+        assert_eq!(get("192.168.1.130/26", "Network"), "192.168.1.128/26");
+        assert_eq!(get("192.168.1.130/26", "Broadcast"), "192.168.1.191");
+        assert_eq!(get("192.168.1.130/26", "Host range"), "192.168.1.129 – 192.168.1.190");
+        assert_eq!(get("192.168.1.130/26", "Usable hosts"), "62");
+        assert_eq!(get("10.0.0.1 255.255.0.0", "Network"), "10.0.0.0/16");
+        assert_eq!(get("10.0.0.1/31", "Usable hosts"), "2");
+        assert_eq!(get("8.8.8.8", "Type"), "Public");
+        assert_eq!(get("0.0.0.0/0", "Total addresses"), "4,294,967,296");
+        assert_eq!(get("2001:db8::1/64", "Last address"), "2001:db8::ffff:ffff:ffff:ffff");
+        assert_eq!(get("2001:db8::1/64", "Type"), "Documentation (RFC 3849)");
+        assert!(get("::1", "Reverse DNS").starts_with("1.0.0.0."));
+        assert!(subnet("10.0.0.1/33").is_err());
+        assert!(subnet("10.0.0.1 255.0.255.0").is_err());
+        assert!(subnet("nope").is_err());
+    }
+
+    #[test]
+    fn network_ids() {
+        let m = mac_address(0, false, true);
+        assert_eq!(m.len(), 17);
+        let first = u8::from_str_radix(&m[..2], 16).unwrap();
+        assert_eq!(first & 0b11, 0b10);
+        assert_eq!(mac_address(2, true, true).len(), 14);
+        let (p48, p64) = ula();
+        assert!(p48.starts_with("fd") && p48.ends_with("::/48") && p64.ends_with("/64"));
+    }
+
+    #[test]
+    fn sql_and_jsonpath() {
+        assert_eq!(format_sql("select a, b from t where x = 1", 1, 2), "SELECT
+  a,
+  b
+FROM
+  t
+WHERE
+  x = 1");
+        assert_eq!(format_sql("select a,
+ b from t", 2, 2), "select a, b from t");
+        let (v, locs) = jsonpath(r#"{"store":{"book":[{"title":"A","price":8},{"title":"B","price":12}]}}"#, "$.store.book[?@.price > 10].title").unwrap();
+        assert_eq!(v, serde_json::json!(["B"]));
+        assert_eq!(locs, ["$['store']['book'][1]['title']"]);
+        assert!(jsonpath("{}", "$..[").is_err());
+        assert!(jsonpath("{", "$").is_err());
+    }
+
+    #[test]
+    fn yaml_and_toml() {
+        let v = parse_yaml("base: &b {x: 1}\nitem:\n  <<: *b\n  y: [true, null]\n1: one").unwrap();
+        assert_eq!(v, serde_json::json!({"base": {"x": 1}, "item": {"x": 1, "y": [true, null]}, "1": "one"}));
+        assert!(parse_yaml("a: [1").is_err());
+        let t = parse_toml("title = \"x\"\n[owner]\ndob = 1979-05-27T07:32:00Z\n").unwrap();
+        assert_eq!(t, serde_json::json!({"title": "x", "owner": {"dob": "1979-05-27T07:32:00Z"}}));
+        let back = to_toml(&serde_json::json!({"name": "a", "server": {"port": 80}})).unwrap();
+        assert_eq!(back, "name = \"a\"\n\n[server]\nport = 80");
+        assert!(to_toml(&serde_json::json!([1])).is_err());
+        assert!(to_toml(&serde_json::json!({"a": null})).unwrap_err().contains("at a"));
     }
 
     #[test]
@@ -867,6 +1799,11 @@ mod tests {
         assert_eq!(detect("1790110981").map(|d| d.0), Some(ToolId::Date));
         assert_eq!(detect("a%20b%26c").map(|d| d.0), Some(ToolId::Url));
         assert_eq!(detect("SGVsbG8sIERldlRveXMhIPCfkYs=").map(|d| d.0), Some(ToolId::Base64));
+        assert_eq!(detect("10.0.0.0/8").map(|d| d.0), Some(ToolId::Subnet));
+        assert_eq!(detect("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----").map(|d| d.0), Some(ToolId::Cert));
+        assert_eq!(detect("data:image/png;base64,iVBORw0KGgo=").map(|d| d.0), Some(ToolId::B64Image));
+        assert_eq!(detect("https://example.com/search?q=a").map(|d| d.0), Some(ToolId::UrlParse));
+        assert_eq!(detect("https://example.com/"), None);
         assert_eq!(detect("just some words"), None);
         assert_eq!(detect("12345"), None);
         assert_eq!(detect("password"), None);
@@ -877,5 +1814,12 @@ mod tests {
         let u = uuid_v4();
         assert_eq!(u.len(), 36);
         assert_eq!(&u[14..15], "4");
+        let v7 = make_ids(IdKind::UuidV7, 20);
+        assert!(v7.iter().all(|u| u.len() == 36 && &u[14..15] == "7"));
+        assert!(v7.windows(2).all(|w| w[0] <= w[1]));
+        let ul = ulid();
+        assert_eq!(ul.len(), 26);
+        assert!(ul.bytes().all(|b| CROCKFORD.contains(&b)));
+        assert!(ul.as_bytes()[0] <= b'7');
     }
 }

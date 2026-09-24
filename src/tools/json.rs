@@ -8,6 +8,7 @@ use gpui_kit::{
 
 use super::*;
 use crate::logic::{self, Indent, plural};
+use crate::registry::ToolId;
 use crate::ui::{self, Tone};
 
 /// The editor shapes and paints each visible line in full on every frame, so a
@@ -300,7 +301,7 @@ fn panes<V: 'static>(
 
 // ------------------------------------------------------------ JSON formatter
 
-const INDENTS: &[&str] = &["2 spaces", "4 spaces", "1 tab", "Minified"];
+pub const INDENTS: &[&str] = &["2 spaces", "4 spaces", "1 tab", "Minified"];
 
 pub struct JsonFmtView {
     io: Io,
@@ -333,6 +334,12 @@ impl JsonFmtView {
         self.recompute(window, cx);
     }
 
+    /// Pick an entry of `INDENTS`.
+    pub fn set_indent(&mut self, indent: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.indent = indent;
+        self.recompute(window, cx);
+    }
+
     fn recompute(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let indent = match self.indent {
             0 => Indent::Spaces(2),
@@ -352,10 +359,7 @@ impl Render for JsonFmtView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = Pal::get(cx);
         sync_wrap(&[&self.io.input, &self.io.output], &mut self.wrap, window, cx);
-        let on_indent = on_index(cx, |this: &mut Self, i, w, cx| {
-            this.indent = i;
-            this.recompute(w, cx);
-        });
+        let on_indent = on_index(cx, |this: &mut Self, i, w, cx| this.set_indent(i, w, cx));
         let sort = self.sort;
         div()
             .flex()
@@ -386,61 +390,147 @@ impl Render for JsonFmtView {
     }
 }
 
-// ------------------------------------------------------------ JSON → YAML
+// ------------------------------------------------------------ JSON ↔ YAML / TOML
 
-const YAML_INDENTS: &[&str] = &["2 spaces", "4 spaces"];
+const INDENT_STEPS: &[&str] = &["2 spaces", "4 spaces"];
 
-pub struct JsonYamlView {
+#[derive(Clone, Copy, PartialEq)]
+enum Other {
+    Yaml,
+    Toml,
+    Csv,
+}
+
+impl Other {
+    fn name(self) -> &'static str {
+        match self {
+            Other::Yaml => "YAML",
+            Other::Toml => "TOML",
+            Other::Csv => "CSV",
+        }
+    }
+
+    fn language(self) -> &'static str {
+        match self {
+            Other::Yaml => "yaml",
+            Other::Toml => "toml",
+            Other::Csv => "plaintext",
+        }
+    }
+
+    fn directions(self) -> &'static [&'static str] {
+        match self {
+            Other::Yaml => &["JSON → YAML", "YAML → JSON"],
+            Other::Toml => &["JSON → TOML", "TOML → JSON"],
+            Other::Csv => &["JSON → CSV", "CSV → JSON"],
+        }
+    }
+}
+
+fn convert(src: &str, other: Other, reverse: bool, step: usize) -> Out {
+    let fail = |e: String, status: String| Out { err: Some(e), status, tone: Some(Tone::Err), ..Default::default() };
+    let (from, to) = if reverse { (other.name(), "JSON") } else { ("JSON", other.name()) };
+    let parsed = match (reverse, other) {
+        (false, _) => serde_json::from_str::<serde_json::Value>(src).map_err(|e| logic::json_err(&e)),
+        (true, Other::Yaml) => logic::parse_yaml(src),
+        (true, Other::Toml) => logic::parse_toml(src),
+        (true, Other::Csv) => logic::csv::csv_to_json(src, true),
+    };
+    let v = match parsed {
+        Ok(v) => v,
+        Err(e) => return fail(e, format!("Invalid {from}")),
+    };
+    let text = match (reverse, other) {
+        (true, _) => Ok(logic::to_json(&v, &Indent::Spaces(step))),
+        (false, Other::Yaml) => Ok(logic::to_yaml(&v, 0, step)),
+        (false, Other::Toml) => logic::to_toml(&v),
+        (false, Other::Csv) => logic::csv::json_to_csv(&v, ','),
+    };
+    match text {
+        Ok(t) => {
+            let status = format!("Converted to {to} · {}", plural(t.split('\n').count(), "line"));
+            Out { text: t.into(), err: None, status, tone: Some(Tone::Ok) }
+        }
+        Err(e) => fail(e, format!("Cannot convert to {to}")),
+    }
+}
+
+/// JSON to YAML or TOML, and back.
+pub struct DataConvView {
+    other: Other,
+    reverse: bool,
     io: Io,
     indent: usize,
     wrap: bool,
     _subs: Vec<Subscription>,
 }
 
-impl JsonYamlView {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (io, find_sub) = Io::new(
-            "{\n  \"service\": \"api-gateway\",\n  \"replicas\": 3,\n  \"ports\": [80, 443],\n  \"env\": { \"LOG_LEVEL\": \"info\", \"CACHE\": true },\n  \"routes\": [\n    { \"path\": \"/users\", \"timeout\": 30 },\n    { \"path\": \"/orders\", \"timeout\": 45 }\n  ]\n}",
-            ("json", "yaml"),
-            window,
-            cx,
-        );
+impl DataConvView {
+    pub fn new(id: ToolId, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let other = match id {
+            ToolId::JsonToml => Other::Toml,
+            ToolId::JsonCsv => Other::Csv,
+            _ => Other::Yaml,
+        };
+        let sample = match other {
+            Other::Yaml => "{\n  \"service\": \"api-gateway\",\n  \"replicas\": 3,\n  \"ports\": [80, 443],\n  \"env\": { \"LOG_LEVEL\": \"info\", \"CACHE\": true },\n  \"routes\": [\n    { \"path\": \"/users\", \"timeout\": 30 },\n    { \"path\": \"/orders\", \"timeout\": 45 }\n  ]\n}",
+            Other::Csv => "[\n  { \"id\": 1, \"name\": \"Ada Lovelace\", \"email\": \"ada@example.com\", \"address\": { \"city\": \"London\" } },\n  { \"id\": 2, \"name\": \"Alan Turing\", \"email\": \"alan@example.com\", \"address\": { \"city\": \"Manchester\" } }\n]",
+            Other::Toml => "{\n  \"package\": { \"name\": \"sidekit\", \"version\": \"0.1.0\", \"edition\": \"2024\" },\n  \"dependencies\": {\n    \"serde\": { \"version\": \"1\", \"features\": [\"derive\"] },\n    \"base64\": \"0.22\"\n  }\n}",
+        };
+        let (io, find_sub) = Io::new(sample, ("json", other.language()), window, cx);
         let subs = vec![
             watch(&io.input, window, cx, Self::recompute),
             watch(&io.output, window, cx, |_, _, _| {}),
             find_sub,
         ];
-        let mut this = Self { io, indent: 0, wrap: false, _subs: subs };
+        let mut this = Self { other, reverse: false, io, indent: 0, wrap: false, _subs: subs };
         this.recompute(window, cx);
         this
     }
 
     fn recompute(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (other, reverse) = (self.other, self.reverse);
         let step = if self.indent == 0 { 2 } else { 4 };
-        self.io.run(window, cx, |this| &mut this.io, move |src| match serde_json::from_str::<serde_json::Value>(src) {
-            Ok(v) => {
-                let y = logic::to_yaml(&v, 0, step);
-                let status = format!("Converted · {}", plural(y.split('\n').count(), "line"));
-                Out { text: y.into(), err: None, status, tone: Some(Tone::Ok) }
-            }
-            Err(e) => Out {
-                err: Some(logic::json_err(&e)),
-                status: "Invalid JSON".into(),
-                tone: Some(Tone::Err),
-                ..Default::default()
-            },
-        });
+        self.io.run(window, cx, |this| &mut this.io, move |src| convert(src, other, reverse, step));
+    }
+
+    fn set_reverse(&mut self, reverse: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if reverse == self.reverse {
+            return;
+        }
+        // Carry the converted document across, so flipping direction round-trips it.
+        if self.io.out.err.is_none() && !self.io.out.text.is_empty() {
+            let text = self.io.out.text.to_string();
+            set_text(&self.io.input, &text, window, cx);
+        }
+        self.reverse = reverse;
+        let (a, b) = if reverse { (self.other.language(), "json") } else { ("json", self.other.language()) };
+        self.io.input.update(cx, |s, cx| s.set_highlighter(a, cx));
+        self.io.output.update(cx, |s, cx| s.set_highlighter(b, cx));
+        self.recompute(window, cx);
     }
 }
 
-impl Render for JsonYamlView {
+impl Render for DataConvView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = Pal::get(cx);
         sync_wrap(&[&self.io.input, &self.io.output], &mut self.wrap, window, cx);
+        let on_dir = on_index(cx, |this: &mut Self, i, w, cx| this.set_reverse(i == 1, w, cx));
         let on_indent = on_index(cx, |this: &mut Self, i, w, cx| {
             this.indent = i;
             this.recompute(w, cx);
         });
+        let target = if self.reverse { "JSON" } else { self.other.name() };
+        // The TOML and CSV writers have one fixed layout.
+        let has_indent = self.reverse || self.other == Other::Yaml;
+        let (id, titles) = match (self.other, self.reverse) {
+            (Other::Yaml, false) => ("jsonyaml", ("JSON", "YAML")),
+            (Other::Yaml, true) => ("jsonyaml", ("YAML", "JSON")),
+            (Other::Toml, false) => ("jsontoml", ("JSON", "TOML")),
+            (Other::Toml, true) => ("jsontoml", ("TOML", "JSON")),
+            (Other::Csv, false) => ("jsoncsv", ("JSON", "CSV")),
+            (Other::Csv, true) => ("jsoncsv", ("CSV", "JSON")),
+        };
         div()
             .flex()
             .flex_col()
@@ -448,14 +538,24 @@ impl Render for JsonYamlView {
             .flex_1()
             .child(ui::section_label("Configuration", &pal))
             .child(ui::setting(
-                "indent",
-                ui::setting_icon("indent", &pal),
-                "Indentation",
-                Some("Spaces used for each nesting level in YAML".into()),
-                ui::dropdown("yindent-dd", YAML_INDENTS, self.indent, &pal, window, cx, on_indent),
+                "conv-dir",
+                ui::setting_icon("conv", &pal),
+                "Conversion",
+                None,
+                ui::seg("conv-dir-seg", self.other.directions(), self.reverse as usize, &pal, on_dir),
                 &pal,
             ))
-            .child(panes("jsonyaml", ("JSON", "YAML"), &self.io, window, cx, Self::recompute))
+            .when(has_indent, |d| {
+                d.child(ui::setting(
+                    "indent",
+                    ui::setting_icon("indent", &pal),
+                    "Indentation",
+                    Some(format!("Spaces used for each nesting level in {target}").into()),
+                    ui::dropdown("yindent-dd", INDENT_STEPS, self.indent, &pal, window, cx, on_indent),
+                    &pal,
+                ))
+            })
+            .child(panes(id, titles, &self.io, window, cx, Self::recompute))
     }
 }
 
