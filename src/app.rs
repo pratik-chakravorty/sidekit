@@ -19,6 +19,7 @@ use crate::icons::icon;
 use crate::id;
 use crate::library_view::{LibraryEvent, LibraryView};
 use crate::palette::{Palette, PaletteAction, PaletteEvent};
+use crate::workflow_view::WorkflowView;
 use crate::registry::{CATS, Cat, TOOLS, Tool, ToolId, cat, tool};
 use crate::settings::Settings;
 use crate::theme::{self, Pal};
@@ -53,6 +54,7 @@ enum Cap {
 pub enum View {
     Home,
     Library,
+    Workflows,
     Settings,
     Tool(ToolId),
 }
@@ -75,6 +77,8 @@ pub struct SideKit {
     group_gen: HashMap<&'static str, usize>,
     tool_views: HashMap<ToolId, AnyView>,
     library: Entity<LibraryView>,
+    /// Made on the first visit to the Workflows page.
+    workflows: Option<Entity<WorkflowView>>,
     hovered_card: Option<ToolId>,
     palette: Option<Entity<Palette>>,
     focus: FocusHandle,
@@ -159,6 +163,7 @@ impl SideKit {
             group_gen: HashMap::new(),
             tool_views: HashMap::new(),
             library,
+            workflows: None,
             hovered_card: None,
             palette: None,
             suggestion: None,
@@ -239,6 +244,9 @@ impl SideKit {
         if let View::Tool(id) = v {
             self.ensure_tool(id, window, cx);
         }
+        if v == View::Workflows {
+            self.ensure_workflows(window, cx);
+        }
         let stop = (self.view, if self.view == View::Library { self.library.read(cx).selected() } else { None });
         self.push_history(stop);
         self.view = v;
@@ -280,6 +288,10 @@ impl SideKit {
             let view = tools::create(id, window, cx);
             self.tool_views.insert(id, view);
         }
+    }
+
+    fn ensure_workflows(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<WorkflowView> {
+        self.workflows.get_or_insert_with(|| cx.new(|cx| WorkflowView::new(window, cx))).clone()
     }
 
     /// The title-bar switch: an explicit choice, so it stops following the system.
@@ -331,7 +343,8 @@ impl SideKit {
         };
         let lib = self.library.read(cx);
         let (library, lib_cmds) = (lib.palette_items(), lib.palette_commands(self.view == View::Library));
-        let palette = cx.new(|cx| Palette::new(current, library, lib_cmds, window, cx));
+        let flows = WorkflowView::names();
+        let palette = cx.new(|cx| Palette::new(current, library, lib_cmds, flows, window, cx));
         let sub = cx.subscribe_in(&palette, window, |this, _, ev: &PaletteEvent, window, cx| {
             this.palette = None;
             window.focus(&this.focus, cx);
@@ -363,6 +376,17 @@ impl SideKit {
             PaletteAction::Lib(action) => {
                 self.go(View::Library, window, cx);
                 self.library.update(cx, |v, cx| v.run(action, window, cx));
+            }
+            PaletteAction::Workflows => self.go(View::Workflows, window, cx),
+            PaletteAction::Workflow(i, on_clipboard) => {
+                self.go(View::Workflows, window, cx);
+                let clip = on_clipboard.then(|| cx.read_from_clipboard().and_then(|c| c.text())).flatten();
+                self.ensure_workflows(window, cx).update(cx, |v, cx| {
+                    v.open(i, window, cx);
+                    if let Some(text) = clip {
+                        v.set_input(&text, window, cx);
+                    }
+                });
             }
             PaletteAction::Settings => self.go(View::Settings, window, cx),
             PaletteAction::ToggleTheme => self.toggle_theme(window, cx),
@@ -704,6 +728,10 @@ impl SideKit {
                             .child(self.library.read(cx).count().to_string()),
                     )
                     .on_click(cx.listener(|this, _, window, cx| this.go(View::Library, window, cx))),
+            )
+            .child(
+                self.nav_item("nav-workflows", "flow", "Workflows", self.view == View::Workflows, false, &pal)
+                    .on_click(cx.listener(|this, _, window, cx| this.go(View::Workflows, window, cx))),
             );
 
         for g in groups {
@@ -1321,6 +1349,10 @@ impl Render for SideKit {
         let content: AnyElement = match view {
             View::Home => self.render_home(window, cx),
             View::Library => div().flex_1().min_h_0().flex().flex_col().child(self.library.clone()).into_any_element(),
+            View::Workflows => {
+                let flows = self.ensure_workflows(window, cx);
+                div().flex_1().min_h_0().flex().flex_col().child(flows).into_any_element()
+            }
             View::Settings => self.render_settings(window, cx),
             View::Tool(id) => self.render_tool(id, window, cx),
         };

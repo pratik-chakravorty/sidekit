@@ -10,6 +10,7 @@ pub mod diff;
 pub mod iprange;
 pub mod media;
 pub mod mock;
+pub mod workflow;
 pub mod xml;
 
 // ---------------------------------------------------------------- helpers

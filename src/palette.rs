@@ -45,6 +45,9 @@ pub enum PaletteAction {
     LibraryItem(u64),
     /// An AI library command: new, import, install, copy …
     Lib(LibAction),
+    Workflows,
+    /// A saved workflow, by its place in the name order; `true` runs it on the clipboard.
+    Workflow(usize, bool),
     Settings,
     ToggleTheme,
     ToggleFavorite(ToolId),
@@ -159,6 +162,7 @@ impl Palette {
         current: Option<ToolId>,
         library: Vec<PaletteItem>,
         lib_cmds: Vec<PaletteCommand>,
+        workflows: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -222,6 +226,24 @@ impl Palette {
             variant: None,
             boost: c.contextual,
         }));
+        for (i, name) in workflows.into_iter().enumerate() {
+            for (run, title, subtitle) in [
+                (false, name.clone(), "Open this workflow"),
+                (true, format!("Run {name} on clipboard"), "Run this workflow on the clipboard text"),
+            ] {
+                entries.push(Entry {
+                    action: PaletteAction::Workflow(i, run),
+                    keywords: format!("{} workflow chain", name.replace(['-', '_'], " ")),
+                    title: title.into(),
+                    subtitle: subtitle.into(),
+                    icon: "flow",
+                    hint: "Workflow".into(),
+                    fav: false,
+                    variant: None,
+                    boost: false,
+                });
+            }
+        }
         let dark = settings.dark;
         let wrap = settings.wrap;
         let mut cmd = |action, title: &str, subtitle: &str, icon, keywords: &str| {
@@ -239,6 +261,7 @@ impl Palette {
         };
         cmd(PaletteAction::Home, "All tools", "Browse every tool", "grid", "home browse");
         cmd(PaletteAction::Library, "AI Library", "Skills, prompts, agents and project rules", "library", "ai skills prompts agents rules claude codex cursor");
+        cmd(PaletteAction::Workflows, "Workflows", "Chain tools: each step's output feeds the next", "flow", "workflow chain pipeline recipe steps");
         cmd(PaletteAction::Settings, "Settings", "Theme, editor and behavior preferences", "gear", "preferences options config");
         cmd(
             PaletteAction::ToggleTheme,
@@ -275,9 +298,12 @@ impl Palette {
         let q = self.input.read(cx).value().trim().to_lowercase();
         if q.is_empty() {
             // Favorites first, then the rest of the tools, then commands.
-            // Library items only show once something is typed.
+            // Library items and saved workflows only show once something is typed.
             let mut idx: Vec<usize> = (0..self.entries.len())
-                .filter(|&i| self.entries[i].variant.is_none() && !matches!(self.entries[i].action, PaletteAction::LibraryItem(_)))
+                .filter(|&i| {
+                    self.entries[i].variant.is_none()
+                        && !matches!(self.entries[i].action, PaletteAction::LibraryItem(_) | PaletteAction::Workflow(..))
+                })
                 .collect();
             idx.sort_by_key(|&i| {
                 let e = &self.entries[i];

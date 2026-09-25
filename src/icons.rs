@@ -80,6 +80,7 @@ const PATHS: &[(&str, &str)] = &[
     ("version", "M4 4h16v16H4zM8 8h3v3H8zM13 13h3v3h-3z"),
     ("keyboard", "M3 6h18v12H3zM7 10h.01M11 10h.01M15 10h.01M17 10h.01M7 14h10"),
     ("tray", "M4 13h4l1.5 3h5l1.5-3h4M4 13l2.5-8h11l2.5 8v6H4z"),
+    ("flow", "M4 4h6v6H4zM14 14h6v6h-6zM7 10v4a3 3 0 0 0 3 3h4"),
     ("key", "M14 4a6 6 0 1 1-4.9 9.5L3 20v-3h3v-3h3l.1-.5A6 6 0 0 1 14 4zM16 8h.01"),
     ("filter", "M4 5h16l-6 8v5l-4 2v-7z"),
     ("shuffle", "M3 7h4l10 10h4M3 17h4l3-3M14 10l3-3h4M18 4l3 3-3 3M18 14l3 3-3 3"),

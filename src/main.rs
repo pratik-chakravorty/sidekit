@@ -11,6 +11,8 @@ mod registry;
 mod settings;
 mod theme;
 mod tools;
+mod workflow_view;
+mod workflows;
 mod tray;
 mod ui;
 
