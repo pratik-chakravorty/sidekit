@@ -22,6 +22,7 @@ mod netgen;
 mod numbase;
 mod password;
 mod regex;
+mod sqlviz;
 mod subnet;
 mod textcase;
 mod unicode;
@@ -49,6 +50,7 @@ pub fn create(id: ToolId, window: &mut Window, cx: &mut App) -> AnyView {
         ToolId::JsonFmt => cx.new(|cx| json::JsonFmtView::new(window, cx)).into(),
         ToolId::JsonYaml | ToolId::JsonToml | ToolId::JsonCsv => cx.new(|cx| json::DataConvView::new(id, window, cx)).into(),
         ToolId::Sql | ToolId::Xml | ToolId::IpRange => cx.new(|cx| transform::TransformView::new(id, window, cx)).into(),
+        ToolId::SqlViz => cx.new(|cx| sqlviz::SqlVizView::new(window, cx)).into(),
         ToolId::Cron => cx.new(|cx| cron::CronView::new(window, cx)).into(),
         ToolId::JsonPath => cx.new(|cx| jsonpath::JsonPathView::new(window, cx)).into(),
         ToolId::TextDiff => cx.new(|cx| diff::TextDiffView::new(window, cx)).into(),

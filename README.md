@@ -1,7 +1,7 @@
 # SideKit
 
 A fast, native developer toolbox built in Rust on [GPUI](https://gpui.rs/) and
-[GPUI Kit](https://gpui-kit.com) (gpui-component). Thirty-seven everyday tools —
+[GPUI Kit](https://gpui-kit.com) (gpui-component). Thirty-eight everyday tools —
 formatters, encoders, generators, converters and testers — in one window that
 opens in about a quarter of a second and runs entirely offline.
 
@@ -169,7 +169,7 @@ kept in git. Set `SIDEKIT_LIBRARY` to use another folder.
 | Encoders / Decoders | Base64 text, Base64 image (data URIs), Hex ⇄ text, URL, URL parser, HTML entities, X.509 certificate decoder, JWT decoder |
 | Formatters          | JSON (indent, minify, sort, validate, find in output), SQL, XML (with well-formedness check) |
 | Generators          | Hash (MD5, SHA-1/224/256/384/512, CRC-32, HMAC), UUID v4 / v7 and ULID, Password, QR code, Mock data (JSON or CSV), Lorem ipsum |
-| Graphic             | Color converter with WCAG contrast and shades      |
+| Graphic             | Color converter with WCAG contrast and shades, SQL to ER diagram & query visualizer (MySQL, PostgreSQL, SQLite, Cassandra CQL) |
 | Network             | IPv4 / IPv6 subnet calculator and address converter, IP range expander & summarizer, MAC address generator, IPv6 ULA generator |
 | Testers             | Regular expression tester, Cron expression parser (plain English + next runs), JSONPath playground, Structured data diff (JSON / YAML) |
 | Text                | Text analyzer & case converter, Escape / unescape, Text diff, Markdown preview, Line sort & dedupe, Unicode inspector |
