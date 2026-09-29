@@ -1,5 +1,5 @@
-//! SQL / CQL diagrams: an ER diagram of the schema and a data-flow picture of
-//! each query, on a canvas that pans, zooms and lets tables be dragged.
+//! SQL / CQL schemas as an ER diagram, on a canvas that pans, zooms and lets
+//! tables be dragged.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ use gpui_kit::{
 
 use super::*;
 use super::big;
-use crate::logic::{self, sqlviz::{self, Analysis, Diagram, Entity as Ent, EntityKind, Key, LinkKind}};
+use crate::logic::{self, sqlviz::{self, Analysis, Entity as Ent, EntityKind, Key, LinkKind}};
 use crate::theme::MONO_FONT;
 use crate::ui::{self, BtnKind, MenuEntry, Tone};
 
@@ -36,8 +36,8 @@ const ZOOM_MIN: f32 = 0.25;
 const ZOOM_MAX: f32 = 2.5;
 
 const EXAMPLES: &[(&str, &str)] = &[
-    ("MySQL shop schema and queries", MYSQL_SAMPLE),
-    ("PostgreSQL analytics query", PG_SAMPLE),
+    ("MySQL shop schema", MYSQL_SAMPLE),
+    ("PostgreSQL billing schema", PG_SAMPLE),
     ("Cassandra (CQL) data model", CQL_SAMPLE),
 ];
 
@@ -95,33 +95,9 @@ CREATE TABLE reviews (
   created_at TIMESTAMP NOT NULL
 );
 
--- Top customers this year
-SELECT u.id, u.email, COUNT(o.id) AS orders, SUM(o.total_cents) AS spent
-FROM users u
-LEFT JOIN orders o ON o.user_id = u.id AND o.status = 'paid'
-WHERE u.created_at >= '2026-01-01'
-GROUP BY u.id, u.email
-HAVING COUNT(o.id) > 3
-ORDER BY spent DESC
-LIMIT 20;
-
--- Best-selling products with their average rating
-SELECT p.name, SUM(oi.quantity) AS sold,
-       (SELECT AVG(r.rating) FROM reviews r WHERE r.product_id = p.id) AS avg_rating
-FROM order_items oi
-JOIN products p ON p.id = oi.product_id
-WHERE p.active = TRUE
-GROUP BY p.id, p.name
-ORDER BY sold DESC
-LIMIT 10;
-
-UPDATE orders o
-JOIN users u ON u.id = o.user_id
-SET o.status = 'flagged'
-WHERE u.email LIKE '%@example.com';
 ";
 
-const PG_SAMPLE: &str = "-- Monthly revenue with a running total (PostgreSQL)
+const PG_SAMPLE: &str = "-- Customers and invoices, with a reporting view (PostgreSQL)
 CREATE TABLE customers (
   id         BIGSERIAL PRIMARY KEY,
   name       TEXT NOT NULL,
@@ -136,22 +112,11 @@ CREATE TABLE invoices (
   paid        BOOLEAN NOT NULL DEFAULT FALSE
 );
 
-WITH monthly AS (
-  SELECT c.region, date_trunc('month', i.issued_at) AS month, SUM(i.amount) AS revenue
-  FROM invoices i
-  JOIN customers c ON c.id = i.customer_id
-  WHERE i.paid
-  GROUP BY c.region, date_trunc('month', i.issued_at)
-)
-SELECT region, month, revenue,
-       SUM(revenue) OVER (PARTITION BY region ORDER BY month) AS running_total
-FROM monthly
-ORDER BY region, month;
-
-INSERT INTO invoices (customer_id, issued_at, amount)
-VALUES (42, now(), 199.00)
-ON CONFLICT (id) DO NOTHING
-RETURNING id;
+CREATE VIEW unpaid_invoices AS
+SELECT i.id, c.name, c.region, i.amount, i.issued_at
+FROM invoices i
+JOIN customers c ON c.id = i.customer_id
+WHERE NOT i.paid;
 ";
 
 const CQL_SAMPLE: &str = "-- A Cassandra data model: one table per query
@@ -195,22 +160,6 @@ CREATE TABLE shop.reviews_by_product (
 
 CREATE INDEX ON shop.orders_by_user (status);
 
--- Fast: the partition key is given, rows come back newest first
-SELECT order_id, status, total
-FROM shop.orders_by_user
-WHERE user_id = ? AND order_date >= '2026-01-01'
-LIMIT 50;
-
--- Slow: filters on a column outside the primary key
-SELECT * FROM shop.reviews_by_product WHERE rating < 2 ALLOW FILTERING;
-
-INSERT INTO shop.users (user_id, email, name)
-VALUES (uuid(), 'ada@example.com', 'Ada')
-IF NOT EXISTS;
-
-UPDATE shop.orders_by_user USING TTL 2592000
-SET status = 'shipped'
-WHERE user_id = ? AND order_date = '2026-09-01' AND order_id = ?;
 ";
 
 enum Drag {
@@ -227,19 +176,16 @@ struct Edge {
     /// Direction each end leaves its box: +1 to the right, -1 to the left.
     dirs: (f32, f32),
     kind: LinkKind,
-    label: Option<(Point<Pixels>, String)>,
 }
 
 pub struct SqlVizView {
     input: Entity<EditorState>,
     analysis: Rc<Analysis>,
     infer: bool,
-    /// 0 = the schema; n = query n.
-    view: usize,
     sizes: Vec<(f32, f32)>,
     positions: Vec<(f32, f32)>,
-    /// Boxes the user dragged, by view and entity name.
-    moved: HashMap<(usize, String), (f32, f32)>,
+    /// Boxes the user dragged, by entity name.
+    moved: HashMap<String, (f32, f32)>,
     signature: String,
     pan: (f32, f32),
     zoom: f32,
@@ -285,21 +231,19 @@ fn box_size(e: &Ent) -> (f32, f32) {
     let head = PAD * 2. + chars(&e.name) * HEAD_FONT * ADV + e.caption.as_ref().map_or(0., |c| 10. + chars(c) * CAP_FONT * ADV);
     let name_w = e.columns.iter().map(|c| chars(&c.name)).fold(0., f32::max) * FONT * ADV;
     let type_w = e.columns.iter().map(|c| chars(&type_label(c))).fold(0., f32::max) * FONT * ADV;
-    let filter = if e.columns.iter().any(|c| c.filtered) { 18. } else { 0. };
-    let body = PAD * 2. + BADGE_W + name_w + filter + 20. + type_w;
+    let body = PAD * 2. + BADGE_W + name_w + 20. + type_w;
     let rows = e.columns.len().max(1) as f32;
     (head.max(body).max(170.).ceil(), HEAD_H + rows * ROW_H + FOOT)
 }
 
 impl SqlVizView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = code_editor(MYSQL_SAMPLE, "Paste CREATE TABLE statements, queries, or both", "sql", window, cx);
+        let input = code_editor(MYSQL_SAMPLE, "Paste CREATE TABLE statements", "sql", window, cx);
         let subs = vec![watch(&input, window, cx, Self::recompute)];
         let mut this = Self {
             input,
             analysis: Rc::new(sqlviz::analyze("", true)),
             infer: true,
-            view: 0,
             sizes: Vec::new(),
             positions: Vec::new(),
             moved: HashMap::new(),
@@ -322,37 +266,24 @@ impl SqlVizView {
         let src = text_of(&self.input, cx);
         let infer = self.infer;
         big::run(src.len(), self, |v| &mut v.task, window, cx, move || sqlviz::analyze(&src, infer), |this, a, _, cx| {
-            let had_schema = this.analysis.table_count() > 0;
             this.analysis = Rc::new(a);
-            let views = 1 + this.analysis.queries.len();
-            let has_schema = this.analysis.table_count() > 0;
-            if this.view >= views || (this.view == 0 && !has_schema) || (!had_schema && has_schema && this.view > 0 && this.analysis.queries.is_empty()) {
-                this.view = if has_schema || this.analysis.queries.is_empty() { 0 } else { 1 };
-            }
             this.relayout();
             cx.notify();
         });
     }
 
-    fn diagram(&self) -> &Diagram {
-        match self.view {
-            0 => &self.analysis.schema,
-            n => self.analysis.queries.get(n - 1).map(|q| &q.diagram).unwrap_or(&self.analysis.schema),
-        }
-    }
-
     /// Size and place every box; refit when a different set of boxes is shown.
     fn relayout(&mut self) {
-        let d = self.diagram();
+        let d = &self.analysis.schema;
         let sizes: Vec<(f32, f32)> = d.entities.iter().map(box_size).collect();
         let links: Vec<(usize, usize)> = d.links.iter().map(|l| (l.from, l.to)).collect();
         let mut positions = sqlviz::layout(&sizes, &links, 90., 36.);
         for (i, e) in d.entities.iter().enumerate() {
-            if let Some(p) = self.moved.get(&(self.view, e.name.clone())) {
+            if let Some(p) = self.moved.get(&e.name) {
                 positions[i] = *p;
             }
         }
-        let signature = format!("{}|{}", self.view, d.entities.iter().map(|e| e.name.as_str()).collect::<Vec<_>>().join(","));
+        let signature = d.entities.iter().map(|e| e.name.as_str()).collect::<Vec<_>>().join(",");
         if signature != self.signature {
             self.signature = signature;
             self.fit_pending = true;
@@ -361,12 +292,6 @@ impl SqlVizView {
         }
         self.sizes = sizes;
         self.positions = positions;
-    }
-
-    fn set_view(&mut self, view: usize, cx: &mut Context<Self>) {
-        self.view = view;
-        self.relayout();
-        cx.notify();
     }
 
     fn fit(&mut self) {
@@ -416,9 +341,8 @@ impl SqlVizView {
                 if let Some(slot) = self.positions.get_mut(*idx) {
                     *slot = np;
                 }
-                if let Some(e) = self.diagram().entities.get(*idx) {
-                    let key = (self.view, e.name.clone());
-                    self.moved.insert(key, np);
+                if let Some(e) = self.analysis.schema.entities.get(*idx) {
+                    self.moved.insert(e.name.clone(), np);
                 }
             }
             None => return,
@@ -427,8 +351,7 @@ impl SqlVizView {
     }
 
     fn arrange(&mut self, cx: &mut Context<Self>) {
-        let view = self.view;
-        self.moved.retain(|k, _| k.0 != view);
+        self.moved.clear();
         self.signature.clear();
         self.relayout();
         self.fit();
@@ -437,28 +360,14 @@ impl SqlVizView {
 
     fn load_example(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.moved.clear();
-        self.view = 0;
         set_text(&self.input, EXAMPLES[i].1, window, cx);
         self.recompute(window, cx);
-    }
-
-    fn view_label(&self, i: usize) -> String {
-        match i {
-            0 => {
-                let a = &self.analysis;
-                format!("Schema · {} · {}", logic::plural(a.table_count(), "table"), logic::plural(a.link_count(), "link"))
-            }
-            n => match self.analysis.queries.get(n - 1) {
-                Some(q) => format!("Query {n} · {}", q.preview),
-                None => String::new(),
-            },
-        }
     }
 
     // ------------------------------------------------------------ drawing
 
     fn edges(&self, pal: &Pal) -> Vec<Edge> {
-        let d = self.diagram();
+        let d = &self.analysis.schema;
         let z = self.zoom;
         let focus = self.selected.or(self.hover);
         let scr = |x: f32, y: f32| point(px(self.pan.0 + x * z), px(self.pan.1 + y * z));
@@ -496,7 +405,6 @@ impl SqlVizView {
             let (mut color, dashed) = match l.kind {
                 LinkKind::ForeignKey => (pal.text3, false),
                 LinkKind::Inferred => (pal.text3, true),
-                LinkKind::Join(_) => (pal.accent, false),
                 LinkKind::Flow => (pal.tok_p, true),
                 LinkKind::Uses => (pal.tok_s, true),
             };
@@ -506,14 +414,7 @@ impl SqlVizView {
             if dim {
                 color.a *= 0.3;
             }
-            let label = match &l.kind {
-                LinkKind::Join(j) => {
-                    let m = bezier_at(&pts, 0.5);
-                    Some((m, j.clone()))
-                }
-                _ => None,
-            };
-            out.push(Edge { pts, color, width: if lit { 2. } else { 1.4 }, dashed, dirs, kind: l.kind.clone(), label });
+            out.push(Edge { pts, color, width: if lit { 2. } else { 1.4 }, dashed, dirs, kind: l.kind.clone() });
         }
         out
     }
@@ -524,13 +425,10 @@ impl SqlVizView {
         let (w, h) = self.sizes[i];
         let p = *pal;
         let lit = self.selected == Some(i) || self.hover == Some(i);
-        let (tint, kind_label) = match e.kind {
-            EntityKind::Table => (None, None),
-            EntityKind::View => (Some(p.tok_p), None),
-            EntityKind::Type => (Some(p.tok_s), None),
-            EntityKind::Cte => (Some(p.accent), Some("CTE")),
-            EntityKind::Derived => (Some(p.accent), None),
-            EntityKind::Result => (Some(p.ok), None),
+        let tint = match e.kind {
+            EntityKind::Table => None,
+            EntityKind::View => Some(p.tok_p),
+            EntityKind::Type => Some(p.tok_s),
         };
         let head_bg = match tint {
             Some(mut c) => {
@@ -539,8 +437,7 @@ impl SqlVizView {
             }
             None => p.subtle,
         };
-        let query_view = self.view > 0;
-        let rows = e.columns.iter().enumerate().map(move |(_, c)| {
+        let rows = e.columns.iter().map(move |c| {
             let badge = badge_of(c);
             let badge_color = match badge {
                 Some("PK") => p.star,
@@ -548,15 +445,11 @@ impl SqlVizView {
                 Some("FK") => p.accent,
                 _ => p.text3,
             };
-            let hl = query_view && c.used && e.kind == EntityKind::Table;
-            let faded = query_view && !c.used && e.kind == EntityKind::Table;
-            let fg = if faded { p.text3 } else { p.text };
             div()
                 .flex()
                 .items_center()
                 .h(px(ROW_H * z))
                 .px(px(PAD * z))
-                .when(hl, |d| d.bg(p.accent_soft))
                 .child(
                     div()
                         .w(px(BADGE_W * z))
@@ -566,12 +459,11 @@ impl SqlVizView {
                         .text_color(badge_color)
                         .when_some(badge, |d, b| d.child(b)),
                 )
-                .child(div().flex_none().text_color(fg).child(c.name.clone()))
-                .when(c.filtered, |d| d.child(div().ml(px(4. * z)).child(crate::icons::icon("filter", 12. * z, p.accent))))
+                .child(div().flex_none().text_color(p.text).child(c.name.clone()))
                 .child(div().flex_1().min_w(px(20. * z)))
                 .child(div().flex_none().text_color(p.text3).child(type_label(c)))
         });
-        let caption = e.caption.clone().or(kind_label.map(String::from));
+        let caption = e.caption.clone();
         div()
             .id(("sv-box", i))
             .absolute()
@@ -631,14 +523,13 @@ impl SqlVizView {
         }
         let p = *pal;
         let edges = self.edges(pal);
-        let labels: Vec<(Point<Pixels>, String, Hsla)> = edges.iter().filter_map(|e| e.label.clone().map(|(pt, s)| (pt, s, e.color))).collect();
         let z = self.zoom;
         let pan = self.pan;
         let bounds_cell = self.bounds.clone();
         let refit = self.fit_pending;
         let dragging = self.drag.is_some();
         let weak = cx.weak_entity();
-        let d = self.diagram();
+        let d = &self.analysis.schema;
         let empty = d.entities.is_empty();
         let boxes: Vec<_> = d.entities.iter().enumerate().map(|(i, e)| self.render_box(i, e, pal, cx).into_any_element()).collect();
 
@@ -708,15 +599,6 @@ impl SqlVizView {
                                 window.paint_path(path, e.color);
                             }
                         }
-                        LinkKind::Join(_) => {
-                            for (pt, dir) in [(f, df), (t, dt)] {
-                                let c = pt + point(px(dir * 3. * m), px(0.));
-                                let r = 3. * m;
-                                window.paint_quad(
-                                    gpui_kit::fill(Bounds::new(c - point(px(r), px(r)), size(px(r * 2.), px(r * 2.))), e.color).corner_radii(px(r)),
-                                );
-                            }
-                        }
                     }
                     if let Ok(path) = marks.build() {
                         window.paint_path(path, e.color);
@@ -744,24 +626,6 @@ impl SqlVizView {
         )
         .absolute()
         .size_full();
-
-        let fs = 10. * z.clamp(0.7, 1.2);
-        let join_labels = labels.into_iter().map(move |(pt, text, color)| {
-            div()
-                .absolute()
-                .left(pt.x - px(chars(&text) * fs * ADV / 2. + 6.))
-                .top(pt.y - px(fs * 0.9 + 3.))
-                .px(px(6.))
-                .py(px(2.))
-                .rounded(px(4.))
-                .bg(p.card)
-                .border_1()
-                .border_color(color)
-                .font_family(MONO_FONT)
-                .text_size(px(fs))
-                .text_color(color)
-                .child(text)
-        });
 
         let tool = |id: &'static str, label: SharedString| {
             div()
@@ -830,8 +694,7 @@ impl SqlVizView {
             .when(!cassandra, |d| d.child(legend_item("PK", p.star, "primary key")))
             .child(legend_item("FK", p.accent, "foreign key"))
             .child(legend_item("UQ", p.text3, "unique"))
-            .child(legend_item("IX", p.text3, "indexed"))
-            .when(self.view > 0, |d| d.child(div().flex().items_center().gap(px(5.)).child(crate::icons::icon("filter", 11., p.accent)).child("filtered")));
+            .child(legend_item("IX", p.text3, "indexed"));
 
         let _ = window;
         div()
@@ -860,7 +723,6 @@ impl SqlVizView {
                 cx.notify();
             }))
             .child(paint)
-            .children(join_labels)
             .children(boxes)
             .when(empty, |d| {
                 d.child(
@@ -872,7 +734,7 @@ impl SqlVizView {
                         .justify_center()
                         .text_size(px(13.))
                         .text_color(p.text3)
-                        .child("Nothing to draw yet: add CREATE TABLE statements or a query."),
+                        .child("Nothing to draw yet: add CREATE TABLE statements."),
                 )
             })
             .child(legend)
@@ -881,81 +743,27 @@ impl SqlVizView {
 
     // ------------------------------------------------------------ explanation
 
-    fn explain_el(&self, pal: &Pal) -> gpui_kit::AnyElement {
+    fn relations_el(&self, pal: &Pal) -> gpui_kit::AnyElement {
         let p = *pal;
         let a = &self.analysis;
-        if self.view == 0 {
-            if a.relations.is_empty() && a.table_count() == 0 {
-                return div().text_size(px(13.)).text_color(p.text3).child("Add CREATE TABLE statements to see how the tables relate, or a query to see what it does step by step.").into_any_element();
-            }
-            let mut card = ui::kv_card(&p);
-            let n = a.relations.len();
-            if n == 0 {
-                card = card.child(ui::kv_row("sv-rel-none", true, &p).child(div().text_size(px(13.)).text_color(p.text3).child("No relationships found. Turn on \"Guess missing links\" to connect columns like user_id to users.")));
-            }
-            for (i, r) in a.relations.iter().enumerate() {
-                let (link, text) = r.split_once(" · ").unwrap_or((r.as_str(), ""));
-                card = card.child(
-                    ui::kv_row(("sv-rel", i), i + 1 == n, &p)
-                        .child(div().w(px(300.)).flex_none().font_family(MONO_FONT).text_size(px(12.)).child(link.to_string()))
-                        .child(ui::kv_val(text.to_string(), true).text_color(p.text2)),
-                );
-            }
-            return card.into_any_element();
+        if a.relations.is_empty() && a.table_count() == 0 {
+            return div().text_size(px(13.)).text_color(p.text3).child("Add CREATE TABLE statements to see how the tables relate.").into_any_element();
         }
-        let Some(q) = a.queries.get(self.view - 1) else { return div().into_any_element() };
-        let n = q.steps.len();
         let mut card = ui::kv_card(&p);
-        for (i, s) in q.steps.iter().enumerate() {
+        let n = a.relations.len();
+        if n == 0 {
+            card = card.child(ui::kv_row("sv-rel-none", true, &p).child(div().text_size(px(13.)).text_color(p.text3).child("No relationships found. Turn on \"Guess missing links\" to connect columns like user_id to users.")));
+        }
+        for (i, r) in a.relations.iter().enumerate() {
+            let (link, text) = r.split_once(" · ").unwrap_or((r.as_str(), ""));
             card = card.child(
-                ui::kv_row(("sv-step", i), i + 1 == n, &p)
-                    .items_start()
-                    .pl(px(14. + s.depth as f32 * 22.))
-                    .child(div().w(px(22.)).flex_none().text_size(px(12.)).text_color(p.text3).pt(px(2.)).child(format!("{}.", i + 1)))
-                    .child(div().w(px(130.)).flex_none().child(ui::badge(s.clause.clone(), Tone::Info, &p)))
-                    .child(ui::kv_val(s.text.clone(), true)),
+                ui::kv_row(("sv-rel", i), i + 1 == n, &p)
+                    .child(div().w(px(300.)).flex_none().font_family(MONO_FONT).text_size(px(12.)).child(link.to_string()))
+                    .child(ui::kv_val(text.to_string(), true).text_color(p.text2)),
             );
         }
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(q.summary.clone()))
-            .child(card)
-            .when(!q.warnings.is_empty(), |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.))
-                        .p(px(12.))
-                        .rounded(px(8.))
-                        .bg(p.danger_soft)
-                        .border_1()
-                        .border_color(p.stroke)
-                        .children(q.warnings.iter().map(|w| {
-                            div()
-                                .flex()
-                                .gap(px(8.))
-                                .items_start()
-                                .text_size(px(13.))
-                                .text_color(p.text)
-                                .child(crate::icons::icon("warn", 15., p.warn).mt(px(2.)))
-                                .child(div().flex_1().child(w.clone()))
-                        })),
-                )
-            })
-            .into_any_element()
+        card.into_any_element()
     }
-}
-
-/// A point on a cubic Bézier.
-fn bezier_at(p: &[Point<Pixels>; 4], t: f32) -> Point<Pixels> {
-    let u = 1. - t;
-    let (a, b, c, d) = (u * u * u, 3. * u * u * t, 3. * u * t * t, t * t * t);
-    let f = |i: usize| (f32::from(p[i].x), f32::from(p[i].y));
-    let (p0, p1, p2, p3) = (f(0), f(1), f(2), f(3));
-    point(px(a * p0.0 + b * p1.0 + c * p2.0 + d * p3.0), px(a * p0.1 + b * p1.1 + c * p2.1 + d * p3.1))
 }
 
 impl Render for SqlVizView {
@@ -963,7 +771,6 @@ impl Render for SqlVizView {
         let pal = Pal::get(cx);
         let [paste, clear] = paste_clear("sv", &self.input, &pal, cx, Self::recompute);
         let on_example = on_index(cx, |this: &mut Self, i, w, cx| this.load_example(i, w, cx));
-        let on_view = on_index(cx, |this: &mut Self, i, _, cx| this.set_view(i, cx));
         let examples = ui::menu_btn(
             "sv-examples",
             None,
@@ -975,37 +782,11 @@ impl Render for SqlVizView {
             cx,
             on_example,
         );
-        let views = 1 + self.analysis.queries.len();
-        let entries: Vec<MenuEntry> = (0..views).map(|i| MenuEntry::new(self.view_label(i), Some(if i == 0 { "table" } else { "flow" }))).collect();
-        let picker = ui::menu_btn(
-            "sv-view",
-            Some(if self.view == 0 { "table" } else { "flow" }),
-            Some(big::preview(&self.view_label(self.view), 48).into()),
-            BtnKind::Normal,
-            entries,
-            &pal,
-            window,
-            cx,
-            on_view,
-        );
-        let export: SharedString = if self.view == 0 {
-            sqlviz::to_mermaid(&self.analysis.schema).into()
-        } else {
-            self.analysis.queries.get(self.view - 1).map(sqlviz::steps_text).unwrap_or_default().into()
-        };
-        let copy_tip = if self.view == 0 { "Copy as Mermaid erDiagram" } else { "Copy the walk-through as text" };
+        let export: SharedString = sqlviz::to_mermaid(&self.analysis.schema).into();
         let zoom = ui::PaneZoom::new("sv-diagram", window, cx);
         let canvas = self.canvas_el(&pal, window, cx);
         let a = &self.analysis;
-        let status = format!(
-            "{} · {} · {}",
-            a.dialect.label(),
-            logic::plural(a.table_count(), "table"),
-            match a.queries.len() {
-                1 => "1 query".to_string(),
-                n => format!("{n} queries"),
-            }
-        );
+        let status = format!("{} · {} · {}", a.dialect.label(), logic::plural(a.table_count(), "table"), logic::plural(a.link_count(), "link"));
         let skipped = a.skipped.len();
 
         div()
@@ -1049,9 +830,8 @@ impl Render for SqlVizView {
                             .child(
                                 ui::pane_head("Diagram", None, &pal)
                                     .gap(px(6.))
-                                    .child(picker)
-                                    .child(ui::copy_btn("sv-copy", export, &pal, window, cx).tooltip(move |w, cx| {
-                                        gpui_kit::component::tooltip::Tooltip::new(copy_tip).build(w, cx)
+                                    .child(ui::copy_btn("sv-copy", export, &pal, window, cx).tooltip(|w, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new("Copy as Mermaid erDiagram").build(w, cx)
                                     }))
                                     .child(zoom.button(&pal)),
                             )
@@ -1060,8 +840,8 @@ impl Render for SqlVizView {
                         window,
                     )),
             )
-            .child(ui::section_label(if self.view == 0 { "Relationships" } else { "What this query does" }, &pal).mt(px(14.)))
-            .child(self.explain_el(&pal))
+            .child(ui::section_label("Relationships", &pal).mt(px(14.)))
+            .child(self.relations_el(&pal))
             .when(skipped > 0, |d| {
                 d.child(
                     div()

@@ -3,7 +3,8 @@
 A fast, native developer toolbox built in Rust on [GPUI](https://gpui.rs/) and
 [GPUI Kit](https://gpui-kit.com) (gpui-component). Thirty-eight everyday tools —
 formatters, encoders, generators, converters and testers — in one window that
-opens in about a quarter of a second and runs entirely offline.
+opens in about a quarter of a second and runs entirely offline. Chain tools into
+reusable workflows, and summon SideKit from any app with a global shortcut.
 
 ![SideKit home screen in light mode](docs/screenshot.png)
 
@@ -109,14 +110,57 @@ by `packaging/make-icons.ps1`.
 
 | Keys              | Action                               |
 | ----------------- | ------------------------------------ |
-| `Ctrl K` / `⌘ K`  | Command palette (tools, commands and the AI library) |
+| `Ctrl Alt K` / `⌃ ⌥ K` | From any app: bring SideKit forward with the clipboard's tool open (press again to hide) |
+| `Ctrl K` / `⌘ K` / `Ctrl P` | Command palette (tools, commands, workflows and the AI library) |
 | `Ctrl F`          | Command palette (find text in JSON output when focused) |
 | `Alt ←`           | Back (also steps back through library items) |
 | `Esc`             | Leave edit mode in the AI library    |
 | `Ctrl Shift T`    | Toggle light / dark (Settings also has a System option that follows the OS) |
 | `Ctrl ,`          | Settings                             |
 
-In the palette: `↑` / `↓` to move, `Enter` to open, `Esc` to close.
+In the palette: `↑` / `↓` (or `Ctrl P` / `Ctrl N`) to move, `Enter` to open,
+`Esc` to close.
+
+## Workflows
+
+Chain tools so each step's output is the next step's input — for example
+*Get query parameter → URL decode → Base64 decode → Format JSON* turns
+`token=eyJ1c2Vy…%3D` from a log line into readable JSON.
+
+- **Steps**: Base64 / Base64URL, URL, HTML and hex encode or decode, escape /
+  unescape, get query parameter, JWT payload, format / minify / sort JSON,
+  JSONPath query, JSON ⇄ YAML, JSON ⇄ TOML, hash (SHA-256, SHA-1, SHA-512,
+  MD5, CRC-32), regex extract, trim, upper / lower case, sort lines and remove
+  duplicate lines.
+- Each step shows its own result as you type. Steps can be switched off to pass
+  their input straight through; if one fails, the steps after it are skipped
+  and the failing step is named.
+- **Save** a workflow once and later edits save themselves. Every saved
+  workflow is in the command palette twice: to open it, and to run it on the
+  clipboard text.
+
+Workflows are small JSON files under `%APPDATA%\SideKit\workflows` (Windows)
+or `~/.config/SideKit/workflows`, one per workflow, so they can be shared or
+kept in git.
+
+## SQL Diagram
+
+Paste `CREATE TABLE` statements and get an entity-relationship diagram. The
+dialect (MySQL, PostgreSQL, SQLite or Cassandra CQL) is detected from the text.
+
+- **Tables, views and types**: columns show their type and are tagged `PK`,
+  `FK`, `UQ` or `IX`. Cassandra tables show partition (`PK`) and clustering
+  (`CK`) keys instead. Views link to the tables they read, and columns of a
+  user-defined type link to that type.
+- **Relationships** come from declared foreign keys. Turn on *Guess missing
+  links* to also connect columns such as `orders.user_id` to `users.id`
+  (drawn dashed), which helps with Cassandra and schemas that have no
+  constraints. Every link is also listed below the diagram.
+- **Canvas**: pan, zoom and drag tables around; *Arrange* lays them out again
+  and *Fit* brings the whole diagram into view.
+- **Copy as Mermaid** puts an `erDiagram` on the clipboard for Markdown docs.
+- The parser is forgiving: queries and statements it does not draw are skipped
+  and named, never treated as errors.
 
 ## AI Library
 
@@ -169,7 +213,7 @@ kept in git. Set `SIDEKIT_LIBRARY` to use another folder.
 | Encoders / Decoders | Base64 text, Base64 image (data URIs), Hex ⇄ text, URL, URL parser, HTML entities, X.509 certificate decoder, JWT decoder |
 | Formatters          | JSON (indent, minify, sort, validate, find in output), SQL, XML (with well-formedness check) |
 | Generators          | Hash (MD5, SHA-1/224/256/384/512, CRC-32, HMAC), UUID v4 / v7 and ULID, Password, QR code, Mock data (JSON or CSV), Lorem ipsum |
-| Graphic             | Color converter with WCAG contrast and shades, SQL to ER diagram & query visualizer (MySQL, PostgreSQL, SQLite, Cassandra CQL) |
+| Graphic             | Color converter with WCAG contrast and shades, SQL to ER diagram (MySQL, PostgreSQL, SQLite, Cassandra CQL) |
 | Network             | IPv4 / IPv6 subnet calculator and address converter, IP range expander & summarizer, MAC address generator, IPv6 ULA generator |
 | Testers             | Regular expression tester, Cron expression parser (plain English + next runs), JSONPath playground, Structured data diff (JSON / YAML) |
 | Text                | Text analyzer & case converter, Escape / unescape, Text diff, Markdown preview, Line sort & dedupe, Unicode inspector |
@@ -185,7 +229,7 @@ and Lorem Ipsum; the current text and editor state are kept when switching views
 
 ## Settings
 
-- **App theme** — light or dark.
+- **App theme** — light, dark, or System to follow the OS.
 - **Editor font size** — 12–15 px for every input and output editor.
 - **Wrap long lines** — soft-wrap editors instead of scrolling sideways.
 - **Smart detection** — when SideKit starts or regains focus it looks at the
@@ -193,22 +237,17 @@ and Lorem Ipsum; the current text and editor state are kept when switching views
   get an "Open …" suggestion on the home page that loads the clipboard straight
   into the matching tool.
 - **Favorites** — star any tool to pin it to the navigation and home page.
+- **Global shortcut** — `Ctrl Alt K` (`⌃ ⌥ K` on macOS) opens SideKit from any
+  app with the clipboard loaded into the matching tool, or the command palette
+  when nothing matches. On Linux this works under X11 only; Wayland has no
+  global shortcut API for it.
+- **Keep running in the tray** (Windows and macOS) — closing the window leaves
+  SideKit in the system tray / menu bar so the shortcut keeps working. Click
+  the icon to reopen it, or use its menu to quit.
 
 Preferences are stored in `%APPDATA%\SideKit\settings.json` on Windows and
 `$XDG_CONFIG_HOME/SideKit/settings.json` (or `~/.config/SideKit/`) elsewhere.
 Settings from the earlier ToyDev name are picked up automatically.
-
-## Platforms
-
-The title bar is drawn by the app on every platform:
-
-- **Windows** — caption buttons map to native hit-test areas, so Snap Layouts
-  and window dragging behave like any Windows app.
-- **Linux** — client-side decorations where the compositor allows them, with
-  working minimize / maximize / close, drag, double-click to maximize and the
-  right-click window menu; server-side decorations are respected otherwise.
-- **macOS** — the system traffic lights sit in the title bar and the app
-  handles dragging and double-click zoom.
 
 ## Project layout
 
@@ -216,13 +255,19 @@ The title bar is drawn by the app on every platform:
 | ----------------- | ------------------------------------------------------- |
 | `src/main.rs`     | Window setup, fonts, theme, key bindings                |
 | `src/app.rs`      | Shell: title bar, navigation, home, settings, tool page |
+| `src/registry.rs` | Catalogue of categories and tools                       |
 | `src/palette.rs`  | Ctrl+K command palette with fuzzy ranking               |
+| `src/settings.rs` | Preferences and where they are stored                   |
+| `src/hotkey.rs`   | System-wide shortcut                                    |
+| `src/tray.rs`     | Tray (Windows) / menu bar (macOS) icon                  |
 | `src/ui.rs`       | Design components (settings rows, toggles, panes, …)    |
 | `src/theme.rs`    | Design tokens and the bridge to gpui-component's theme  |
 | `src/logic.rs`    | Pure conversion logic and clipboard detection, tested   |
-| `src/logic/`      | Larger pure modules (CSV, cron, diff, XML, certificates, IP ranges, images / QR, mock data), tested |
+| `src/logic/`      | Larger pure modules (CSV, cron, diff, XML, certificates, IP ranges, images / QR, mock data, SQL diagrams, workflow steps), tested |
 | `src/library.rs`  | AI library storage, import, credential scan, install targets, tested |
 | `src/library_view.rs` | AI library page                                     |
+| `src/workflows.rs` | Saved workflow files                                   |
+| `src/workflow_view.rs` | Workflows page                                     |
 | `src/tools/`      | One view per tool, created lazily on first open         |
 
 Run the tests with `cargo test`.
