@@ -109,7 +109,7 @@ impl SideKit {
             if Settings::get(cx).follow_system {
                 let dark = theme::system_dark(cx);
                 if dark != Settings::get(cx).dark {
-                    this.apply_theme(dark, window, cx);
+                    this.apply_theme(dark, true, window, cx);
                 }
             }
         });
@@ -304,12 +304,14 @@ impl SideKit {
     fn set_theme_mode(&mut self, mode: usize, window: &mut Window, cx: &mut Context<Self>) {
         let follow = mode == 2;
         let dark = if follow { theme::system_dark(cx) } else { mode == 1 };
-        Settings::update(cx, |s| s.follow_system = follow);
-        self.apply_theme(dark, window, cx);
+        self.apply_theme(dark, follow, window, cx);
     }
 
-    fn apply_theme(&mut self, dark: bool, window: &mut Window, cx: &mut Context<Self>) {
-        Settings::update(cx, |s| s.dark = dark);
+    fn apply_theme(&mut self, dark: bool, follow: bool, window: &mut Window, cx: &mut Context<Self>) {
+        Settings::update(cx, |s| {
+            s.dark = dark;
+            s.follow_system = follow;
+        });
         theme::apply(dark, Some(window), cx);
         cx.notify();
     }

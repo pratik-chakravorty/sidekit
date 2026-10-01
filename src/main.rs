@@ -59,6 +59,7 @@ fn main() {
         }
         let dark = settings.dark;
         cx.set_global(settings);
+        Settings::save_on_quit(cx);
         theme::apply(dark, None, cx);
         app::bind_keys(cx);
         palette::bind_keys(cx);

@@ -1,0 +1,895 @@
+{
+  "name": "Aster Ridge",
+  "version": "1.0.0",
+  "colour_space": "sRGB",
+  "tile_size": 16,
+  "palette": "palette.hex",
+  "player_accent_indices": [
+    28,
+    29,
+    30
+  ],
+  "pivot_coordinates": "top-left origin, pixels; bottom edge = cell height",
+  "import_settings": {
+    "filter": "Point",
+    "compression": "None",
+    "mipmaps": false,
+    "pixels_per_unit": 16,
+    "alpha_is_transparency": true
+  },
+  "sheets": [
+    {
+      "file": "player.png",
+      "width": 384,
+      "height": 256,
+      "cell_width": 32,
+      "cell_height": 32,
+      "columns": 12,
+      "rows": 8,
+      "pivot": [
+        16,
+        32
+      ],
+      "animations": [
+        {
+          "name": "idle",
+          "first_frame": 0,
+          "frame_count": 8,
+          "fps": 8,
+          "loop": true,
+          "row": 0,
+          "pivot": [
+            16,
+            32
+          ]
+        },
+        {
+          "name": "run",
+          "first_frame": 12,
+          "frame_count": 12,
+          "fps": 14,
+          "loop": true,
+          "row": 1,
+          "pivot": [
+            16,
+            32
+          ]
+        },
+        {
+          "name": "jump_rise",
+          "first_frame": 24,
+          "frame_count": 2,
+          "fps": 10,
+          "loop": true,
+          "row": 2,
+          "pivot": [
+            16,
+            32
+          ]
+        },
+        {
+          "name": "fall",
+          "first_frame": 36,
+          "frame_count": 2,
+          "fps": 10,
+          "loop": true,
+          "row": 3,
+          "pivot": [
+            16,
+            32
+          ]
+        },
+        {
+          "name": "dash",
+          "first_frame": 48,
+          "frame_count": 4,
+          "fps": 20,
+          "loop": true,
+          "row": 4,
+          "pivot": [
+            16,
+            32
+          ]
+        },
+        {
+          "name": "wall_slide",
+          "first_frame": 60,
+          "frame_count": 2,
+          "fps": 6,
+          "loop": true,
+          "row": 5,
+          "pivot": [
+            16,
+            32
+          ]
+        },
+        {
+          "name": "hurt",
+          "first_frame": 72,
+          "frame_count": 4,
+          "fps": 16,
+          "loop": false,
+          "row": 6,
+          "pivot": [
+            16,
+            32
+          ]
+        },
+        {
+          "name": "appear",
+          "first_frame": 84,
+          "frame_count": 6,
+          "fps": 16,
+          "loop": false,
+          "row": 7,
+          "pivot": [
+            16,
+            32
+          ]
+        }
+      ]
+    },
+    {
+      "file": "terrain.png",
+      "width": 128,
+      "height": 64,
+      "cell_width": 16,
+      "cell_height": 16,
+      "columns": 8,
+      "rows": 4,
+      "pivot": [
+        8.0,
+        16
+      ],
+      "animations": []
+    },
+    {
+      "file": "objects/spikes.png",
+      "width": 16,
+      "height": 16,
+      "cell_width": 16,
+      "cell_height": 16,
+      "columns": 1,
+      "rows": 1,
+      "pivot": [
+        8.0,
+        16
+      ],
+      "animations": []
+    },
+    {
+      "file": "objects/saw.png",
+      "width": 128,
+      "height": 32,
+      "cell_width": 32,
+      "cell_height": 32,
+      "columns": 4,
+      "rows": 1,
+      "pivot": [
+        16,
+        16
+      ],
+      "animations": [
+        {
+          "name": "rotate",
+          "first_frame": 0,
+          "frame_count": 4,
+          "fps": 16,
+          "loop": true,
+          "pivot": [
+            16,
+            16
+          ]
+        }
+      ]
+    },
+    {
+      "file": "objects/spring.png",
+      "width": 48,
+      "height": 16,
+      "cell_width": 16,
+      "cell_height": 16,
+      "columns": 3,
+      "rows": 1,
+      "pivot": [
+        8.0,
+        16
+      ],
+      "animations": [
+        {
+          "name": "rest",
+          "first_frame": 0,
+          "frame_count": 1,
+          "fps": 1,
+          "loop": true,
+          "pivot": [
+            8.0,
+            16
+          ]
+        },
+        {
+          "name": "bounce",
+          "first_frame": 1,
+          "frame_count": 2,
+          "fps": 16,
+          "loop": false,
+          "pivot": [
+            8.0,
+            16
+          ]
+        }
+      ]
+    },
+    {
+      "file": "objects/dash_crystal.png",
+      "width": 128,
+      "height": 16,
+      "cell_width": 16,
+      "cell_height": 16,
+      "columns": 8,
+      "rows": 1,
+      "pivot": [
+        8,
+        8
+      ],
+      "animations": [
+        {
+          "name": "idle",
+          "first_frame": 0,
+          "frame_count": 6,
+          "fps": 10,
+          "loop": true,
+          "pivot": [
+            8,
+            8
+          ]
+        },
+        {
+          "name": "spent",
+          "first_frame": 6,
+          "frame_count": 1,
+          "fps": 1,
+          "loop": true,
+          "pivot": [
+            8,
+            8
+          ]
+        }
+      ]
+    },
+    {
+      "file": "objects/collectible.png",
+      "width": 96,
+      "height": 16,
+      "cell_width": 16,
+      "cell_height": 16,
+      "columns": 6,
+      "rows": 1,
+      "pivot": [
+        8,
+        8
+      ],
+      "animations": [
+        {
+          "name": "idle",
+          "first_frame": 0,
+          "frame_count": 6,
+          "fps": 8,
+          "loop": true,
+          "pivot": [
+            8,
+            8
+          ]
+        }
+      ]
+    },
+    {
+      "file": "objects/checkpoint.png",
+      "width": 112,
+      "height": 32,
+      "cell_width": 16,
+      "cell_height": 32,
+      "columns": 7,
+      "rows": 1,
+      "pivot": [
+        8.0,
+        32
+      ],
+      "animations": [
+        {
+          "name": "inactive",
+          "first_frame": 0,
+          "frame_count": 1,
+          "fps": 1,
+          "loop": true,
+          "pivot": [
+            8.0,
+            32
+          ]
+        },
+        {
+          "name": "active",
+          "first_frame": 1,
+          "frame_count": 6,
+          "fps": 10,
+          "loop": true,
+          "pivot": [
+            8.0,
+            32
+          ]
+        }
+      ]
+    },
+    {
+      "file": "objects/goal.png",
+      "width": 192,
+      "height": 32,
+      "cell_width": 32,
+      "cell_height": 32,
+      "columns": 6,
+      "rows": 1,
+      "pivot": [
+        16.0,
+        32
+      ],
+      "animations": [
+        {
+          "name": "idle",
+          "first_frame": 0,
+          "frame_count": 1,
+          "fps": 1,
+          "loop": true,
+          "pivot": [
+            16.0,
+            32
+          ]
+        },
+        {
+          "name": "activated",
+          "first_frame": 1,
+          "frame_count": 5,
+          "fps": 10,
+          "loop": true,
+          "pivot": [
+            16.0,
+            32
+          ]
+        }
+      ]
+    },
+    {
+      "file": "objects/moving_platform.png",
+      "width": 48,
+      "height": 8,
+      "cell_width": 16,
+      "cell_height": 8,
+      "columns": 3,
+      "rows": 1,
+      "pivot": [
+        8,
+        0
+      ],
+      "animations": []
+    },
+    {
+      "file": "objects/crumble_platform.png",
+      "width": 160,
+      "height": 8,
+      "cell_width": 32,
+      "cell_height": 8,
+      "columns": 5,
+      "rows": 1,
+      "pivot": [
+        16,
+        0
+      ],
+      "animations": [
+        {
+          "name": "intact",
+          "first_frame": 0,
+          "frame_count": 1,
+          "fps": 1,
+          "loop": true,
+          "pivot": [
+            16,
+            0
+          ]
+        },
+        {
+          "name": "crumble",
+          "first_frame": 1,
+          "frame_count": 4,
+          "fps": 12,
+          "loop": false,
+          "pivot": [
+            16,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "file": "objects/pressure_plate.png",
+      "width": 64,
+      "height": 8,
+      "cell_width": 32,
+      "cell_height": 8,
+      "columns": 2,
+      "rows": 1,
+      "pivot": [
+        16,
+        8
+      ],
+      "animations": [
+        {
+          "name": "up",
+          "first_frame": 0,
+          "frame_count": 1,
+          "fps": 1,
+          "loop": true,
+          "pivot": [
+            16,
+            8
+          ]
+        },
+        {
+          "name": "pressed",
+          "first_frame": 1,
+          "frame_count": 1,
+          "fps": 1,
+          "loop": true,
+          "pivot": [
+            16,
+            8
+          ]
+        }
+      ]
+    },
+    {
+      "file": "objects/gate_block.png",
+      "width": 16,
+      "height": 16,
+      "cell_width": 16,
+      "cell_height": 16,
+      "columns": 1,
+      "rows": 1,
+      "pivot": [
+        8.0,
+        16
+      ],
+      "animations": []
+    },
+    {
+      "file": "objects/timed_spikes.png",
+      "width": 192,
+      "height": 32,
+      "cell_width": 32,
+      "cell_height": 32,
+      "columns": 6,
+      "rows": 1,
+      "pivot": [
+        16,
+        32
+      ],
+      "animations": [
+        {
+          "name": "cycle",
+          "first_frame": 0,
+          "frame_count": 6,
+          "fps": 10,
+          "loop": true,
+          "pivot": [
+            16,
+            32
+          ]
+        }
+      ]
+    },
+    {
+      "file": "objects/particles.png",
+      "width": 64,
+      "height": 8,
+      "cell_width": 8,
+      "cell_height": 8,
+      "columns": 8,
+      "rows": 1,
+      "pivot": [
+        4,
+        4
+      ],
+      "animations": [
+        {
+          "name": "dust",
+          "first_frame": 0,
+          "frame_count": 4,
+          "fps": 16,
+          "loop": false,
+          "pivot": [
+            4,
+            4
+          ]
+        },
+        {
+          "name": "sparkle",
+          "first_frame": 4,
+          "frame_count": 4,
+          "fps": 12,
+          "loop": false,
+          "pivot": [
+            4,
+            4
+          ]
+        }
+      ]
+    },
+    {
+      "file": "enemies/walker.png",
+      "width": 192,
+      "height": 16,
+      "cell_width": 24,
+      "cell_height": 16,
+      "columns": 8,
+      "rows": 1,
+      "pivot": [
+        12.0,
+        16
+      ],
+      "animations": [
+        {
+          "name": "walk",
+          "first_frame": 0,
+          "frame_count": 4,
+          "fps": 10,
+          "loop": true,
+          "pivot": [
+            12.0,
+            16
+          ]
+        },
+        {
+          "name": "charge",
+          "first_frame": 4,
+          "frame_count": 2,
+          "fps": 16,
+          "loop": true,
+          "pivot": [
+            12.0,
+            16
+          ]
+        },
+        {
+          "name": "squashed",
+          "first_frame": 6,
+          "frame_count": 2,
+          "fps": 8,
+          "loop": false,
+          "pivot": [
+            12.0,
+            16
+          ]
+        }
+      ]
+    },
+    {
+      "file": "enemies/flyer.png",
+      "width": 192,
+      "height": 16,
+      "cell_width": 24,
+      "cell_height": 16,
+      "columns": 8,
+      "rows": 1,
+      "pivot": [
+        12.0,
+        16
+      ],
+      "animations": [
+        {
+          "name": "flap",
+          "first_frame": 0,
+          "frame_count": 4,
+          "fps": 12,
+          "loop": true,
+          "pivot": [
+            12.0,
+            16
+          ]
+        },
+        {
+          "name": "asleep",
+          "first_frame": 4,
+          "frame_count": 2,
+          "fps": 4,
+          "loop": true,
+          "pivot": [
+            12.0,
+            16
+          ]
+        },
+        {
+          "name": "squashed",
+          "first_frame": 6,
+          "frame_count": 2,
+          "fps": 8,
+          "loop": false,
+          "pivot": [
+            12.0,
+            16
+          ]
+        }
+      ]
+    },
+    {
+      "file": "enemies/shooter.png",
+      "width": 128,
+      "height": 16,
+      "cell_width": 16,
+      "cell_height": 16,
+      "columns": 8,
+      "rows": 1,
+      "pivot": [
+        8.0,
+        16
+      ],
+      "animations": [
+        {
+          "name": "idle",
+          "first_frame": 0,
+          "frame_count": 4,
+          "fps": 6,
+          "loop": true,
+          "pivot": [
+            8.0,
+            16
+          ]
+        },
+        {
+          "name": "shoot",
+          "first_frame": 4,
+          "frame_count": 3,
+          "fps": 12,
+          "loop": false,
+          "pivot": [
+            8.0,
+            16
+          ]
+        },
+        {
+          "name": "squashed",
+          "first_frame": 7,
+          "frame_count": 1,
+          "fps": 1,
+          "loop": false,
+          "pivot": [
+            8.0,
+            16
+          ]
+        }
+      ]
+    },
+    {
+      "file": "enemies/shot.png",
+      "width": 16,
+      "height": 8,
+      "cell_width": 8,
+      "cell_height": 8,
+      "columns": 2,
+      "rows": 1,
+      "pivot": [
+        4,
+        4
+      ],
+      "animations": [
+        {
+          "name": "travel",
+          "first_frame": 0,
+          "frame_count": 2,
+          "fps": 12,
+          "loop": true,
+          "pivot": [
+            4,
+            4
+          ]
+        }
+      ]
+    },
+    {
+      "file": "background/sky.png",
+      "width": 8,
+      "height": 224,
+      "cell_width": 8,
+      "cell_height": 224,
+      "columns": 1,
+      "rows": 1,
+      "pivot": [
+        0,
+        0
+      ],
+      "animations": []
+    },
+    {
+      "file": "background/far.png",
+      "width": 400,
+      "height": 224,
+      "cell_width": 400,
+      "cell_height": 224,
+      "columns": 1,
+      "rows": 1,
+      "pivot": [
+        0,
+        0
+      ],
+      "animations": []
+    },
+    {
+      "file": "background/mid.png",
+      "width": 400,
+      "height": 224,
+      "cell_width": 400,
+      "cell_height": 224,
+      "columns": 1,
+      "rows": 1,
+      "pivot": [
+        0,
+        0
+      ],
+      "animations": []
+    },
+    {
+      "file": "background/near.png",
+      "width": 400,
+      "height": 224,
+      "cell_width": 400,
+      "cell_height": 224,
+      "columns": 1,
+      "rows": 1,
+      "pivot": [
+        0,
+        0
+      ],
+      "animations": []
+    },
+    {
+      "file": "ui/panel.png",
+      "width": 48,
+      "height": 48,
+      "cell_width": 48,
+      "cell_height": 48,
+      "columns": 1,
+      "rows": 1,
+      "pivot": [
+        24,
+        24
+      ],
+      "animations": [],
+      "border": [
+        16,
+        16,
+        16,
+        16
+      ]
+    },
+    {
+      "file": "ui/button.png",
+      "width": 144,
+      "height": 16,
+      "cell_width": 48,
+      "cell_height": 16,
+      "columns": 3,
+      "rows": 1,
+      "pivot": [
+        24,
+        8
+      ],
+      "animations": [
+        {
+          "name": "normal",
+          "first_frame": 0,
+          "frame_count": 1,
+          "fps": 1,
+          "loop": true,
+          "pivot": [
+            24,
+            8
+          ]
+        },
+        {
+          "name": "selected",
+          "first_frame": 1,
+          "frame_count": 1,
+          "fps": 1,
+          "loop": true,
+          "pivot": [
+            24,
+            8
+          ]
+        },
+        {
+          "name": "pressed",
+          "first_frame": 2,
+          "frame_count": 1,
+          "fps": 1,
+          "loop": true,
+          "pivot": [
+            24,
+            8
+          ]
+        }
+      ],
+      "border": [
+        8,
+        8,
+        8,
+        8
+      ]
+    },
+    {
+      "file": "ui/logo.png",
+      "width": 96,
+      "height": 80,
+      "cell_width": 96,
+      "cell_height": 80,
+      "columns": 1,
+      "rows": 1,
+      "pivot": [
+        48,
+        40
+      ],
+      "animations": []
+    },
+    {
+      "file": "ui/icons.png",
+      "width": 80,
+      "height": 16,
+      "cell_width": 16,
+      "cell_height": 16,
+      "columns": 5,
+      "rows": 1,
+      "pivot": [
+        8,
+        8
+      ],
+      "animations": [],
+      "frame_names": [
+        "dash_crystal",
+        "collectible",
+        "clock",
+        "skull",
+        "pause"
+      ]
+    }
+  ],
+  "terrain_tile_names": [
+    "TL-corner",
+    "Top",
+    "TR-corner",
+    "Single-column-top",
+    "InnerCorner-TL",
+    "InnerCorner-TR",
+    "Fill-A",
+    "Fill-B",
+    "Left",
+    "Fill",
+    "Right",
+    "Single-column-mid",
+    "InnerCorner-BL",
+    "InnerCorner-BR",
+    "Fill-C",
+    "Fill-D",
+    "BL-corner",
+    "Bottom",
+    "BR-corner",
+    "Single-column-bottom",
+    "Single-row-left",
+    "Single-row-mid",
+    "Single-row-right",
+    "Isolated",
+    "grass_short",
+    "grass_tall",
+    "grass_bent",
+    "moss_drip",
+    "moss_long",
+    "crack",
+    "fern",
+    "amber_bloom"
+  ]
+}
